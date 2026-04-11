@@ -526,42 +526,195 @@ def _run_trade(job: PollJob) -> RunPush:
 
 
 def _run_fetch_emails(job: PollJob) -> RunPush:
-    """Trigger an email fetch and record it as a holdings run summary.
+    """Pull custodian/bank emails via Microsoft Graph and extract them.
 
-    Phase 1 reports this as a no-op success — the fetch itself is a
-    Phase 2 concern wrapped around core/email_ingestor.py. For now we
-    just acknowledge the job so the control plane can see the agent
-    received it.
+    Drives core.email_ingestor.EmailIngestor with credentials pulled
+    from agent settings + DPAPI secrets. Downloads each day's zips and
+    extracts them into the workdir's data/{date}/raw/{source}/ tree,
+    which is exactly what the holdings/bank recon workflows expect to
+    read from.
     """
     log = _LogCollector()
-    date_str = _job_date(job)
-    log("Email fetch jobs are Phase 2 — acknowledging without action")
-    return RunPush(
-        job_id=job.id,
-        type="holdings",
-        recon_date=date_str,
-        status="all_clear",
-        counts={},
-        attachments_meta={},
-        reminder_count=0,
-        log_lines=log.as_log_lines(),
-    )
+    try:
+        date_str = _job_date(job)
+    except ValueError as e:
+        return _failed_push(job, "holdings", _now_iso()[:10], log, e)
+
+    log(f"Starting email fetch for {date_str}")
+    settings = load_settings()
+
+    from .secrets import KEY_M365_CLIENT_SECRET, get_store
+    from .setup import EK_M365_CLIENT_ID, EK_M365_MAILBOX, EK_M365_TENANT_ID
+
+    extras = settings.extras or {}
+    azure_cfg = {
+        "tenant_id": extras.get(EK_M365_TENANT_ID, ""),
+        "client_id": extras.get(EK_M365_CLIENT_ID, ""),
+        "client_secret": get_store().get(KEY_M365_CLIENT_SECRET) or "",
+        "mailbox": extras.get(EK_M365_MAILBOX, ""),
+    }
+    if not all(azure_cfg.values()):
+        log(
+            "M365 Graph credentials are not configured on this agent — "
+            "complete the first-run wizard or open /setup and fill in "
+            "Azure tenant/client/mailbox before scheduling fetch jobs.",
+            level="error",
+        )
+        return _failed_push(job, "holdings", date_str, log, ValueError("m365_not_configured"))
+
+    try:
+        from core.email_ingestor import EmailIngestor
+
+        fm = _file_manager(settings.workdir)
+        sources = _load_config_json("sources.json").get("sources", [])
+        if not sources:
+            log("sources.json is empty — nothing to fetch", level="warning")
+            return RunPush(
+                job_id=job.id,
+                type="holdings",
+                recon_date=date_str,
+                status="all_clear",
+                counts={"fetched": 0, "sources": 0},
+                attachments_meta={},
+                reminder_count=0,
+                log_lines=log.as_log_lines(),
+            )
+
+        ingestor = EmailIngestor(azure_cfg)
+        log(f"Walking {len(sources)} source(s) for {date_str}")
+        results = ingestor.fetch_for_date(
+            date_str=date_str,
+            sources=sources,
+            file_manager=fm,
+            log_callback=log,
+        )
+
+        ok_count = sum(1 for r in results if r.get("status") == "ok")
+        err_count = sum(1 for r in results if r.get("status") == "error")
+        skip_count = sum(1 for r in results if r.get("status") == "skipped")
+        log(
+            f"Fetch complete — ok={ok_count} skipped={skip_count} errors={err_count}"
+        )
+        status: RunStatus = "all_clear" if err_count == 0 else "breaks_found"
+        return RunPush(
+            job_id=job.id,
+            type="holdings",
+            recon_date=date_str,
+            status=status,
+            counts={
+                "fetched": ok_count,
+                "skipped": skip_count,
+                "errors": err_count,
+                "sources": len(sources),
+            },
+            attachments_meta={},
+            reminder_count=0,
+            log_lines=log.as_log_lines(),
+        )
+    except Exception as e:  # noqa: BLE001
+        return _failed_push(job, "holdings", date_str, log, e)
 
 
 def _run_ws_download(job: PollJob) -> RunPush:
+    """Download WealthSpectrum master reports for the given date.
+
+    Mirrors the legacy Flask app's "Download WS masters" flow, driven
+    by ws_downloader.run_all_downloads. Credentials come from agent
+    settings (username) + DPAPI (password). The WS portal base URL is
+    either taken from FINCRM_URL (legacy env var) or defaulted.
+    """
     log = _LogCollector()
-    date_str = _job_date(job)
-    log("WS download jobs are Phase 2 — acknowledging without action")
-    return RunPush(
-        job_id=job.id,
-        type="holdings",
-        recon_date=date_str,
-        status="all_clear",
-        counts={},
-        attachments_meta={},
-        reminder_count=0,
-        log_lines=log.as_log_lines(),
-    )
+    try:
+        date_str = _job_date(job)
+    except ValueError as e:
+        return _failed_push(job, "holdings", _now_iso()[:10], log, e)
+
+    log(f"Starting WS download for {date_str}")
+    settings = load_settings()
+
+    from .secrets import KEY_WS_PORTAL_PASSWORD, get_store
+    from .setup import EK_WS_USERNAME
+
+    extras = settings.extras or {}
+    ws_user = extras.get(EK_WS_USERNAME, "").strip()
+    ws_pass = (get_store().get(KEY_WS_PORTAL_PASSWORD) or "").strip()
+    if not ws_user or not ws_pass:
+        log(
+            "WealthSpectrum portal credentials are not configured — "
+            "open /setup on the local UI and fill in the WS portal "
+            "username + password.",
+            level="error",
+        )
+        return _failed_push(
+            job, "holdings", date_str, log, ValueError("ws_not_configured")
+        )
+
+    try:
+        # ws_downloader.py reads credentials from environment variables
+        # so we can keep the legacy module untouched. Set them just for
+        # the duration of this call — we don't want other threads in
+        # the agent process seeing the password.
+        prev = {
+            "FINCRM_USER": os.environ.get("FINCRM_USER"),
+            "FINCRM_PASS": os.environ.get("FINCRM_PASS"),
+        }
+        os.environ["FINCRM_USER"] = ws_user
+        os.environ["FINCRM_PASS"] = ws_pass
+
+        from ws_downloader import run_all_downloads
+
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+        app_dir = Path(settings.workdir).resolve()
+        app_dir.mkdir(parents=True, exist_ok=True)
+
+        def progress(name: str, state: str, msg: str) -> None:
+            lvl = "error" if state == "error" else "info"
+            log(f"WS {name}: {state} — {msg}", level=lvl)
+
+        # Restrict to the filter if the job payload asked for it
+        reports_filter = None
+        payload = job.payload or {}
+        if isinstance(payload.get("reports"), list):
+            reports_filter = [str(r) for r in payload["reports"]]
+
+        try:
+            result = run_all_downloads(
+                date_obj=date_obj,
+                app_dir=app_dir,
+                progress_cb=progress,
+                reports_filter=reports_filter,
+            )
+        finally:
+            # Restore prior env (usually unset)
+            for k, v in prev.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+        total = int(result.get("total", 0))
+        success = int(result.get("success_count", 0))
+        errors = total - success
+        log(f"WS download complete — ok={success}/{total} errors={errors}")
+        status: RunStatus = (
+            "all_clear" if errors == 0 and total > 0 else "breaks_found"
+        )
+        return RunPush(
+            job_id=job.id,
+            type="holdings",
+            recon_date=date_str,
+            status=status,
+            counts={
+                "downloaded": success,
+                "total": total,
+                "errors": errors,
+            },
+            attachments_meta={},
+            reminder_count=0,
+            log_lines=log.as_log_lines(),
+        )
+    except Exception as e:  # noqa: BLE001
+        return _failed_push(job, "holdings", date_str, log, e)
 
 
 def _run_diagnostic_bundle(job: PollJob) -> RunPush:
