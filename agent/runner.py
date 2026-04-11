@@ -380,6 +380,32 @@ def _run_bank(job: PollJob) -> RunPush:
             f"{summary_dict.get('clean', 0)} clean, {summary_dict.get('breaks', 0)} breaks"
         )
 
+        # Write the Keystone-tagged Excel report. The exporter is new
+        # in Phase 2 — the legacy in-house app never had a working
+        # bank writer. Failure to export must NOT fail the run; we
+        # still push the summary to the control plane either way.
+        bank_output_path: str | None = None
+        try:
+            from core.bank_recon_exporter import export_bank_recon
+
+            out_dir = Path(str(fm.output_dir(date_str)))
+            out_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime("%H%M%S")
+            raw_path = str(out_dir / f"BankRecon_{date_str.replace('-', '')}_{ts}.xlsx")
+            balance_dict = balance_summary.to_dict() if balance_summary else None
+            export_bank_recon(
+                summary_dict,
+                raw_path,
+                balance_check=balance_dict,
+                recon_date=date_str,
+            )
+            bank_output_path = _keystone_rename(raw_path, "bank", date_str)
+            if bank_output_path:
+                log(f"Bank recon report: {bank_output_path}")
+        except Exception as exp_err:  # noqa: BLE001
+            log(f"Bank export failed: {exp_err}", level="warning")
+            bank_output_path = None
+
         counts = derive_counts_from_results("bank", summary_dict)
         breaks = counts.get("breaks", 0)
         status: RunStatus = "breaks_found" if isinstance(breaks, int) and breaks > 0 else "all_clear"
@@ -390,7 +416,7 @@ def _run_bank(job: PollJob) -> RunPush:
             recon_date=date_str,
             status=status,
             counts=counts,
-            attachments_meta={},
+            attachments_meta=attachment_metadata(bank_output_path),
             reminder_count=0,
             log_lines=log.as_log_lines(),
         )
