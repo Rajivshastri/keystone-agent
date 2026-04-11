@@ -31,16 +31,18 @@ from .local_runs import get_store as _get_local_runs
 
 
 def _load_config_json(name: str) -> dict:
-    """Load a JSON config file from the agent repo's `config/` directory.
+    """Load a JSON config file from the bundled config directory.
 
     Phase 3 replaces this with a per-tenant config store under the
-    workdir. For now we read the shipped defaults alongside the engine
-    code so the runner has something to point the workflows at.
+    workdir. For now we read the shipped defaults via agent.paths so
+    the resolution works the same way in the dev tree and inside a
+    PyInstaller-frozen bundle.
     """
     import json as _json
 
-    # config/ lives at the repo root next to core/ and parsers/
-    candidate = Path(__file__).resolve().parent.parent / "config" / name
+    from .paths import config_dir
+
+    candidate = config_dir() / name
     if not candidate.exists():
         return {}
     try:

@@ -26,9 +26,16 @@ from pathlib import Path
 from typing import Any, Callable
 
 # Config files live alongside the core/ and parsers/ packages at the
-# agent repo root. Phase 3 uses a fixed path; Phase 4 would switch to
-# settings.workdir / 'config' for per-tenant bring-your-own config.
-_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
+# agent repo root in dev mode. In a PyInstaller bundle they are seeded
+# from the read-only bundle into the writable data dir on first access.
+# agent.paths.config_dir() handles both cases. Resolve per call rather
+# than at import time so the lazy seed runs after data_dir() has been
+# initialised.
+from .paths import config_dir as _agent_config_dir
+
+
+def _CONFIG_DIR() -> Path:  # noqa: N802 — keep old name for call sites
+    return _agent_config_dir()
 
 
 # ── Schema of one column ────────────────────────────────────────────── #
@@ -410,7 +417,7 @@ def export_csv(slug: str) -> str:
     t = TEMPLATES.get(slug)
     if t is None:
         raise KeyError(f"Unknown template: {slug}")
-    rows = t.loader(_CONFIG_DIR / t.backing_file)
+    rows = t.loader(_CONFIG_DIR() / t.backing_file)
     buf = io.StringIO()
     headers = [c.name for c in t.columns]
     w = csv.DictWriter(buf, fieldnames=headers, extrasaction="ignore")
@@ -445,7 +452,7 @@ def parse_and_diff(slug: str, csv_text: str) -> tuple[DiffResult, list[dict[str,
     if t is None:
         raise KeyError(f"Unknown template: {slug}")
 
-    current_rows = t.loader(_CONFIG_DIR / t.backing_file)
+    current_rows = t.loader(_CONFIG_DIR() / t.backing_file)
     current_by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
     for row in current_rows:
         k = tuple(row.get(c) for c in t.key)
@@ -537,7 +544,7 @@ def commit_csv(
     if t is None:
         raise KeyError(f"Unknown template: {slug}")
 
-    existing = t.loader(_CONFIG_DIR / t.backing_file)
+    existing = t.loader(_CONFIG_DIR() / t.backing_file)
     by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
     for row in existing:
         by_key[tuple(row.get(c) for c in t.key)] = row
@@ -555,4 +562,4 @@ def commit_csv(
             if k not in incoming_keys:
                 final.append(row)
 
-    t.saver(_CONFIG_DIR / t.backing_file, final)
+    t.saver(_CONFIG_DIR() / t.backing_file, final)

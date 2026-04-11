@@ -14,7 +14,11 @@ a = Analysis(
     pathex=['..'],
     binaries=[],
     datas=[
-        # Phase 1: ('..\\agent\\templates', 'agent\\templates'),
+        # Ship the default config snapshot with the installer so a
+        # freshly-installed agent has something to run against before
+        # the operator imports any templates. Resolved at runtime via
+        # sys._MEIPASS when frozen — see agent.paths.config_dir().
+        ('..\\config', 'config'),
     ],
     hiddenimports=[
         'uvicorn.logging',
