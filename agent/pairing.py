@@ -172,6 +172,17 @@ class PairingCoordinator:
         session.tenant_id = resp.tenant_id
         logger.info(f"Pairing complete — agent_id={resp.agent_id}")
 
+        # Jumpstart the poll loop so the first post-pair poll fires
+        # within ~1s rather than waiting for the current inter-tick
+        # sleep to expire. The poll loop exposes a module-level
+        # wake_current() helper for exactly this use case.
+        try:
+            from .poll import PollLoop
+
+            PollLoop.wake_current()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Poll loop jumpstart failed: {e}")
+
 
 # Module-level singleton
 _coordinator: PairingCoordinator | None = None

@@ -26,12 +26,23 @@ logger = logging.getLogger(__name__)
 class PollLoop:
     """Encapsulates the agent's outbound polling behaviour."""
 
+    # Module-level singleton reference so PairingCoordinator (and anyone
+    # else in-process) can wake us without having to pass a handle around.
+    _instance: "PollLoop | None" = None
+
     def __init__(self, settings: AgentSettings) -> None:
         self._settings = settings
         self._client = ControlPlaneClient(settings)
         self._stop_event = threading.Event()
+        # Separate event used purely as a cancellable sleep target. We
+        # reach for _wake_event.wait(interval) between ticks; anything
+        # that wants to jumpstart the next tick sets it. The loop re-
+        # creates it each iteration so a single wake doesn't flow
+        # through every subsequent wait.
+        self._wake_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_heartbeat_at: float = 0.0
+        PollLoop._instance = self
 
     def start(self) -> None:
         if self._thread is not None:
@@ -44,11 +55,30 @@ class PollLoop:
 
     def stop(self, timeout: float = 5.0) -> None:
         self._stop_event.set()
+        self._wake_event.set()  # break any current wait
         if self._thread is not None:
             self._thread.join(timeout=timeout)
             self._thread = None
         self._client.close()
         logger.info("Poll loop stopped")
+        if PollLoop._instance is self:
+            PollLoop._instance = None
+
+    def wake(self) -> None:
+        """Interrupt the current inter-tick sleep so the next tick runs now.
+
+        Safe to call from any thread. Used by PairingCoordinator so the
+        first poll after a successful pair happens within ~1s rather
+        than up to the full poll_interval.
+        """
+        self._wake_event.set()
+
+    @classmethod
+    def wake_current(cls) -> None:
+        """Convenience for callers that don't hold a PollLoop reference."""
+        inst = cls._instance
+        if inst is not None:
+            inst.wake()
 
     # ---- internals ---- #
 
@@ -60,10 +90,16 @@ class PollLoop:
                 logger.warning(f"Poll transport error: {e}")
             except Exception as e:  # noqa: BLE001
                 logger.exception(f"Poll loop unexpected error: {e}")
+            if self._stop_event.is_set():
+                break
             # Re-read the interval on each loop so a pairing handshake
             # that changes poll_interval_seconds is picked up immediately.
             interval = max(1, int(load_settings().poll_interval_seconds))
-            self._stop_event.wait(interval)
+            # Sleep on wake_event — wake() sets it, which returns from
+            # wait() immediately. We then clear it so the next tick
+            # waits again from zero.
+            self._wake_event.wait(interval)
+            self._wake_event.clear()
 
     def _tick(self) -> None:
         settings = load_settings()
