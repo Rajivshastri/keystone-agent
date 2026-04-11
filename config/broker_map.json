@@ -1,175 +1,175 @@
 {
   "brokers": [
     {
+      "active": true,
+      "brokerage_rate": 0.001,
+      "dealer_code": "EQRS",
+      "email_domain": "",
       "name": "EQUIRUS SECURITIES PRIVATE LIMITED",
       "sebi_code": "INZ000251536",
-      "dealer_code": "EQRS",
+      "sebi_reg_no": "INZ000251536",
       "sender_email": "backoffice@equirus.com",
-      "email_domain": "",
-      "subject_keyword": "Trade Confirmation",
-      "brokerage_rate": 0.001,
-      "active": true,
-      "sebi_reg_no": "INZ000251536"
+      "subject_keyword": "Trade Confirmation"
     },
     {
+      "active": true,
+      "brokerage_rate": 0.001,
+      "dealer_code": "IFIN",
+      "email_domain": "iiflcap.com",
       "name": "IIFL Capital Services Ltd",
       "sebi_code": "IIFLSEC",
-      "dealer_code": "IFIN",
+      "sebi_reg_no": "INZ000164132",
       "sender_email": "",
-      "email_domain": "iiflcap.com",
-      "subject_keyword": "India Trade Confirms",
-      "brokerage_rate": 0.001,
-      "active": true,
-      "sebi_reg_no": "INZ000164132"
+      "subject_keyword": "India Trade Confirms"
     },
     {
+      "active": true,
+      "brokerage_rate": 0.001,
+      "dealer_code": "DAKI",
+      "email_domain": "",
       "name": "DHANKI SECURITIES PVT. LTD.",
       "sebi_code": "DHANKI",
-      "dealer_code": "DAKI",
       "sender_email": "info@dhankisecurities.com",
-      "email_domain": "",
-      "subject_keyword": "",
-      "brokerage_rate": 0.001,
-      "active": true
+      "subject_keyword": ""
     },
     {
+      "active": true,
+      "brokerage_rate": 0.001,
+      "dealer_code": "ICFX",
+      "email_domain": "",
       "name": "ICICI SECURITIES LTD",
       "sebi_code": "ICICI SECURITIES LTD",
-      "dealer_code": "ICFX",
+      "sebi_reg_no": "INZ000183631",
       "sender_email": "equity.settlements@icicisecurities.com",
-      "email_domain": "",
-      "subject_keyword": "",
-      "brokerage_rate": 0.001,
-      "active": true,
-      "sebi_reg_no": "INZ000183631"
+      "subject_keyword": ""
     },
     {
+      "active": true,
+      "brokerage_rate": 0.001,
+      "dealer_code": "MOTI",
+      "email_domain": "",
       "name": "MOTILAL OSWAL FINANCIAL SERVICES LTD",
       "sebi_code": "MOTILAL",
-      "dealer_code": "MOTI",
+      "sebi_reg_no": "INZ000158836",
       "sender_email": "instops@motilaloswal.com",
-      "email_domain": "",
-      "subject_keyword": "",
-      "brokerage_rate": 0.001,
-      "active": true,
-      "sebi_reg_no": "INZ000158836"
+      "subject_keyword": ""
     },
     {
+      "active": true,
+      "brokerage_rate": 0.001,
+      "dealer_code": "KOTK",
+      "email_domain": "",
       "name": "KOTAK SECURITIES LIMITED",
       "sebi_code": "KOTAK",
-      "dealer_code": "KOTK",
       "sender_email": "inst.cash@kotak.com",
-      "email_domain": "",
-      "subject_keyword": "",
-      "brokerage_rate": 0.001,
-      "active": true
+      "subject_keyword": ""
     },
     {
+      "active": true,
+      "brokerage_rate": 0.001,
+      "dealer_code": "EDEL",
+      "email_domain": "",
       "name": "NUVAMA WEALTH MANAGEMENT LIMITED",
       "sebi_code": "NWML",
-      "dealer_code": "EDEL",
+      "sebi_reg_no": "INZ000166136",
       "sender_email": "InstOps@nuvama.com",
-      "email_domain": "",
-      "subject_keyword": "GOLDSTANDARD EOD CASH FILE",
-      "brokerage_rate": 0.001,
-      "active": true,
-      "sebi_reg_no": "INZ000166136"
+      "subject_keyword": "GOLDSTANDARD EOD CASH FILE"
     },
     {
+      "active": true,
+      "brokerage_rate": 0.001,
+      "dealer_code": "EMKY",
+      "email_domain": "",
       "name": "EMKAY GLOBAL FINANCIAL SERVICES LIMITED",
       "sebi_code": "EMKAY",
-      "dealer_code": "EMKY",
+      "sebi_reg_no": "INB010804030",
       "sender_email": "inst@emkayglobal.com",
-      "email_domain": "",
-      "subject_keyword": "",
-      "brokerage_rate": 0.001,
-      "active": true,
-      "sebi_reg_no": "INB010804030"
+      "subject_keyword": ""
     },
     {
+      "active": true,
+      "brokerage_rate": 0.001,
+      "dealer_code": "ESSI",
+      "email_domain": "",
       "name": "HAITONG SECURITIES INDIA PRIVATE LIMITED",
       "sebi_code": "HAITONG",
-      "dealer_code": "ESSI",
+      "sebi_reg_no": "INZ000026435",
       "sender_email": "India.Ops@htisec.com",
-      "email_domain": "",
-      "subject_keyword": "",
-      "brokerage_rate": 0.001,
-      "active": true,
-      "sebi_reg_no": "INZ000026435"
+      "subject_keyword": ""
     }
   ],
   "trade_sources": [
     {
-      "name": "dealer",
+      "active": true,
       "display_name": "Dealer Grid File (transactions@)",
-      "sender_email": "transactions@thegoldstandard.in",
-      "subject_keyword": "",
+      "file_password": "",
       "file_prefix": "grid",
-      "file_password": "",
-      "active": true
+      "name": "dealer",
+      "sender_email": "transactions@thegoldstandard.in",
+      "subject_keyword": ""
     },
     {
-      "name": "dealer",
+      "active": true,
       "display_name": "Dealer Trade Allocation (operations@)",
-      "sender_email": "operations@thegoldstandard.in",
-      "subject_keyword": "Trade Allocation File",
-      "file_prefix": "",
       "file_password": "",
-      "active": true
-    },
-    {
+      "file_prefix": "",
       "name": "dealer",
-      "display_name": "Dealer Trade Allocation (shabnam@)",
-      "sender_email": "shabnam@thegoldstandard.in",
-      "subject_keyword": "Trade Allocation File",
-      "file_prefix": "",
-      "file_password": "",
-      "active": true
-    },
-    {
-      "name": "nsdl",
-      "display_name": "NSDL SRK File",
       "sender_email": "operations@thegoldstandard.in",
-      "subject_keyword": "",
+      "subject_keyword": "Trade Allocation File"
+    },
+    {
+      "active": true,
+      "display_name": "Dealer Trade Allocation (shabnam@)",
+      "file_password": "",
+      "file_prefix": "",
+      "name": "dealer",
+      "sender_email": "shabnam@thegoldstandard.in",
+      "subject_keyword": "Trade Allocation File"
+    },
+    {
+      "active": true,
+      "display_name": "NSDL SRK File",
+      "file_password": "",
       "file_prefix": "SRK",
-      "file_password": "",
-      "active": true
+      "name": "nsdl",
+      "sender_email": "operations@thegoldstandard.in",
+      "subject_keyword": ""
     },
     {
-      "name": "exchange",
+      "active": false,
       "display_name": "NSE Trade File",
+      "file_password": "",
+      "file_prefix": "",
+      "name": "exchange",
       "sender_email": "nse-direct@nse.co.in",
-      "subject_keyword": "Trades executed at NSE",
-      "file_prefix": "",
-      "file_password": "",
-      "active": false
+      "subject_keyword": "Trades executed at NSE"
     },
     {
-      "name": "exchange",
+      "active": false,
       "display_name": "NSE Funds/Securities Balance",
+      "file_password": "",
+      "file_prefix": "",
+      "name": "exchange",
       "sender_email": "nse_alerts@nse.co.in",
-      "subject_keyword": "Funds/Securities Balance",
-      "file_prefix": "",
-      "file_password": "",
-      "active": false
+      "subject_keyword": "Funds/Securities Balance"
     },
     {
-      "name": "exchange",
+      "active": false,
       "display_name": "BSE Funds/Securities Balance",
-      "sender_email": "info@bseindia.in",
-      "subject_keyword": "Funds / Securities Balance",
-      "file_prefix": "",
       "file_password": "",
-      "active": false
+      "file_prefix": "",
+      "name": "exchange",
+      "sender_email": "info@bseindia.in",
+      "subject_keyword": "Funds / Securities Balance"
     },
     {
-      "name": "exchange",
+      "active": true,
       "display_name": "BSE Trade File",
-      "sender_email": "mgrpt@bseindia.com",
-      "subject_keyword": "Details of your BSE trade",
-      "file_prefix": "",
       "file_password": "",
-      "active": true
+      "file_prefix": "",
+      "name": "exchange",
+      "sender_email": "mgrpt@bseindia.com",
+      "subject_keyword": "Details of your BSE trade"
     }
   ]
 }
