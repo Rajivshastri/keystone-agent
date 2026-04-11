@@ -1,0 +1,211 @@
+"""Background poll loop.
+
+Phase 1: drains the job queue on every tick, executes each job via
+`agent.runner.execute_job`, and pushes the resulting `RunPush` to the
+control plane. If the push fails (transport error, 5xx), the payload
+is persisted to the local SQLite outbox and retried on the next tick.
+
+Heartbeats go out every 60 seconds independent of the poll cadence.
+"""
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from datetime import datetime, timezone
+
+from .config import AgentSettings, load_settings
+from .outbox import get_outbox
+from .protocol import HealthPing, PollJob, RunPush
+from .runner import execute_job
+from .transport import ControlPlaneClient, TransportError
+
+logger = logging.getLogger(__name__)
+
+
+class PollLoop:
+    """Encapsulates the agent's outbound polling behaviour."""
+
+    def __init__(self, settings: AgentSettings) -> None:
+        self._settings = settings
+        self._client = ControlPlaneClient(settings)
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._last_heartbeat_at: float = 0.0
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(
+            target=self._run, name="keystone-poll", daemon=True
+        )
+        self._thread.start()
+        logger.info("Poll loop started")
+
+    def stop(self, timeout: float = 5.0) -> None:
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+            self._thread = None
+        self._client.close()
+        logger.info("Poll loop stopped")
+
+    # ---- internals ---- #
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                self._tick()
+            except TransportError as e:
+                logger.warning(f"Poll transport error: {e}")
+            except Exception as e:  # noqa: BLE001
+                logger.exception(f"Poll loop unexpected error: {e}")
+            # Re-read the interval on each loop so a pairing handshake
+            # that changes poll_interval_seconds is picked up immediately.
+            interval = max(1, int(load_settings().poll_interval_seconds))
+            self._stop_event.wait(interval)
+
+    def _tick(self) -> None:
+        settings = load_settings()
+
+        # Heartbeat every 60s regardless of poll cadence
+        now = time.monotonic()
+        if now - self._last_heartbeat_at >= 60.0:
+            self._send_heartbeat(settings)
+            self._last_heartbeat_at = now
+
+        # Only poll / push if the agent is actually paired
+        if not settings.agent_id:
+            return
+
+        # 1) Drain the outbox first — anything queued while we were offline
+        self._drain_outbox()
+
+        # 2) Pull fresh jobs
+        try:
+            resp = self._client.poll(max_jobs=8)
+        except TransportError as e:
+            logger.warning(f"Poll call failed: {e}")
+            return
+
+        if resp.update is not None:
+            logger.info(
+                f"Update available: {resp.update.version} "
+                f"(required={resp.update.required})"
+            )
+            # Phase 4: auto-updater flow
+
+        if not resp.jobs:
+            return
+        logger.info(f"Received {len(resp.jobs)} job(s) from control plane")
+        for job in resp.jobs:
+            self._execute_and_push(job)
+
+    # ---- dispatch ---- #
+
+    def _execute_and_push(self, job: PollJob) -> None:
+        """Run one job end-to-end: execute, push, fall back to outbox."""
+        logger.info(f"Executing job {job.id} type={job.type}")
+        try:
+            run = execute_job(job)
+        except Exception as e:  # noqa: BLE001
+            logger.exception(f"Runner crashed on job {job.id}: {e}")
+            return
+
+        self._push_run(run)
+
+    def _push_run(self, run: RunPush) -> None:
+        """Attempt immediate push; fall back to outbox on failure."""
+        try:
+            resp = self._client.push_run(run)
+            if resp.ok:
+                logger.info(
+                    f"Run pushed to control plane: {run.type}/{run.recon_date} "
+                    f"status={run.status} run_id={resp.run_id}"
+                )
+                return
+            logger.warning(
+                f"Push returned ok=false — queueing to outbox: {run.type}/{run.recon_date}"
+            )
+        except TransportError as e:
+            logger.warning(
+                f"Push failed ({e}) — queueing to outbox: {run.type}/{run.recon_date}"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception(
+                f"Push unexpected error — queueing to outbox: {e}"
+            )
+
+        # Fall-through: enqueue
+        try:
+            get_outbox().enqueue(run.model_dump())
+        except Exception as e:  # noqa: BLE001
+            logger.exception(f"Outbox enqueue failed: {e}")
+
+    def _drain_outbox(self) -> None:
+        """Retry everything in the outbox, FIFO.
+
+        Any success deletes the row; any failure bumps the attempt
+        counter and leaves the row in place for the next tick. We cap
+        per-tick work at 16 rows so a huge backlog doesn't stall the
+        live job loop.
+        """
+        outbox = get_outbox()
+        items = outbox.peek(limit=16)
+        if not items:
+            return
+        logger.info(f"Draining {len(items)} outbox item(s)")
+        for item in items:
+            try:
+                run = RunPush.model_validate(item.payload)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Outbox item {item.id} has invalid payload, dropping: {e}")
+                outbox.delete(item.id)
+                continue
+            try:
+                resp = self._client.push_run(run)
+                if resp.ok:
+                    outbox.delete(item.id)
+                    logger.info(
+                        f"Outbox item {item.id} flushed: {run.type}/{run.recon_date}"
+                    )
+                else:
+                    outbox.bump_attempt(item.id, "push returned ok=false")
+                    return  # stop draining so live jobs get a turn
+            except TransportError as e:
+                outbox.bump_attempt(item.id, str(e))
+                return  # control plane down — stop draining
+            except Exception as e:  # noqa: BLE001
+                outbox.bump_attempt(item.id, f"{type(e).__name__}: {e}")
+                return
+
+    def _send_heartbeat(self, settings: AgentSettings) -> None:
+        if not settings.agent_id:
+            return
+        from . import __version__
+
+        try:
+            disk_free = _disk_free_mb(settings.workdir or ".")
+        except Exception:
+            disk_free = None
+        try:
+            self._client.health(
+                HealthPing(
+                    version=__version__,
+                    disk_free_mb=disk_free,
+                    pending_jobs=get_outbox().count(),
+                    metrics={"local_time": datetime.now(timezone.utc).isoformat()},
+                )
+            )
+        except TransportError as e:
+            logger.warning(f"Heartbeat failed: {e}")
+
+
+def _disk_free_mb(path: str) -> int | None:
+    import shutil
+
+    try:
+        total, used, free = shutil.disk_usage(path)
+    except OSError:
+        return None
+    return int(free // (1024 * 1024))
