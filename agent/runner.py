@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import AgentSettings, load_settings
+from .local_runs import get_store as _get_local_runs
 
 
 def _load_config_json(name: str) -> dict:
@@ -300,6 +301,8 @@ def _run_holdings(job: PollJob) -> RunPush:
         # Retag the engine-written file with Keystone_Holdings_{date}_{time}
         renamed = _keystone_rename(result.output_path, "holdings", date_str)
         log(f"Holdings recon complete — report at {renamed}")
+        if renamed:
+            _get_local_runs().record(job.id, "holdings", date_str, renamed)
 
         counts = derive_counts_from_results("holdings", result.results)
         status: RunStatus = _holdings_status_from_counts(counts)
@@ -402,6 +405,7 @@ def _run_bank(job: PollJob) -> RunPush:
             bank_output_path = _keystone_rename(raw_path, "bank", date_str)
             if bank_output_path:
                 log(f"Bank recon report: {bank_output_path}")
+                _get_local_runs().record(job.id, "bank", date_str, bank_output_path)
         except Exception as exp_err:  # noqa: BLE001
             log(f"Bank export failed: {exp_err}", level="warning")
             bank_output_path = None
@@ -499,6 +503,7 @@ def _run_trade(job: PollJob) -> RunPush:
         renamed_0096 = _keystone_rename(xlsx_0096, "trade", date_str)
         if renamed_recon:
             log(f"Trade recon report: {renamed_recon}")
+            _get_local_runs().record(job.id, "trade", date_str, renamed_recon)
         if renamed_0096:
             log(f"Trade 0096 upload file: {renamed_0096}")
         att = attachment_metadata(renamed_recon)

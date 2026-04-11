@@ -13,11 +13,12 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
 from . import __version__
 from .config import AgentSettings, load_settings, save_settings
+from .local_runs import get_store as _get_local_runs
 from .pairing import get_coordinator, unpair
 from .secrets import smoke_test
 from .setup import (
@@ -28,6 +29,7 @@ from .setup import (
     save_ws_portal,
     setup_state,
 )
+from .template_drafts import get_store as _get_draft_store
 from .templates import (
     commit_csv,
     export_csv,
@@ -607,30 +609,77 @@ def create_app() -> FastAPI:
             )
 
         try:
-            diff, merged = parse_and_diff(slug, csv_text)
+            diff, _merged = parse_and_diff(slug, csv_text)
         except KeyError:
             return HTMLResponse(_template_error_page(slug, "Unknown template"), status_code=404)
 
-        # Stash the merged rows in a server-side cache keyed by a token
-        # so the operator can confirm without re-uploading. For Phase 3
-        # we keep it simple: inline the CSV back into the confirm form.
-        return HTMLResponse(_template_preview_page(slug, diff, csv_text))
+        # Stash the CSV in the server-side scratch store and pass only
+        # the opaque token through the preview URL. The commit endpoint
+        # re-parses the draft so the operator sees identical numbers.
+        token = _get_draft_store().put(slug, csv_text)
+        return HTMLResponse(_template_preview_page(slug, diff, token))
+
+    @app.get("/api/templates/{slug}/preview", response_class=HTMLResponse)
+    def api_template_preview(slug: str, token: str) -> Any:
+        draft = _get_draft_store().get(token)
+        if draft is None or draft.slug != slug:
+            return HTMLResponse(
+                _template_error_page(slug, "Preview expired — please upload again."),
+                status_code=404,
+            )
+        try:
+            diff, _merged = parse_and_diff(slug, draft.csv_text)
+        except KeyError:
+            return HTMLResponse(_template_error_page(slug, "Unknown template"), status_code=404)
+        return HTMLResponse(_template_preview_page(slug, diff, token))
 
     @app.post("/api/templates/{slug}/commit", response_class=HTMLResponse)
     async def api_template_commit(slug: str, request: Request) -> Any:
         form = await request.form()
-        csv_text = str(form.get("csv_text", ""))
+        token = str(form.get("token", ""))
         keep_removed = str(form.get("keep_removed", "1")) == "1"
-        if not csv_text:
-            return HTMLResponse(_template_error_page(slug, "Missing CSV payload"), status_code=400)
+        if not token:
+            return HTMLResponse(_template_error_page(slug, "Missing draft token"), status_code=400)
+        store = _get_draft_store()
+        draft = store.get(token)
+        if draft is None or draft.slug != slug:
+            return HTMLResponse(
+                _template_error_page(slug, "Draft expired — please upload again."),
+                status_code=404,
+            )
         try:
-            _diff, merged = parse_and_diff(slug, csv_text)
+            _diff, merged = parse_and_diff(slug, draft.csv_text)
             commit_csv(slug, merged, keep_removed=keep_removed)
         except KeyError:
             return HTMLResponse(_template_error_page(slug, "Unknown template"), status_code=404)
         except Exception as e:  # noqa: BLE001
             return HTMLResponse(_template_error_page(slug, f"Commit failed: {e}"), status_code=400)
+        store.delete(token)
         return RedirectResponse(url="/templates?msg=saved", status_code=303)
+
+    @app.get("/api/runs/{job_id}/download")
+    def api_run_download(job_id: str) -> Any:
+        """Stream the local recon artifact for a job id.
+
+        Meant for use by the 'Open on agent machine' button in the
+        control plane's Run Detail page. Only works from localhost —
+        the agent never exposes this endpoint off-box.
+        """
+        row = _get_local_runs().get(job_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="No local artifact for this run")
+        from pathlib import Path as _Path
+
+        p = _Path(row.output_path)
+        if not p.is_file():
+            raise HTTPException(
+                status_code=410, detail=f"Artifact moved or deleted: {row.output_path}"
+            )
+        return FileResponse(
+            path=str(p),
+            filename=p.name,
+            media_type="application/octet-stream",
+        )
 
     return app
 
@@ -650,7 +699,7 @@ def _template_error_page(slug: str, message: str) -> str:
 </body></html>"""
 
 
-def _template_preview_page(slug: str, diff: Any, csv_text: str) -> str:
+def _template_preview_page(slug: str, diff: Any, token: str) -> str:
     spec = get_template(slug)
     title = spec.title if spec else slug
 
@@ -680,10 +729,6 @@ def _template_preview_page(slug: str, diff: Any, csv_text: str) -> str:
     changed_html = "".join(
         f'<li style="color:#b06820">{_row_summary(n)}</li>' for _, n in diff.changed
     ) or '<li class="muted">none</li>'
-
-    # Hidden form field with the CSV text so commit doesn't require a
-    # second upload. Escape </textarea> for safety.
-    safe_csv = csv_text.replace("</textarea>", "<\\/textarea>")
 
     has_errors = bool(getattr(diff, "errors", None))
     commit_btn = (
@@ -732,7 +777,7 @@ def _template_preview_page(slug: str, diff: Any, csv_text: str) -> str:
 </div>
 
 <form action="/api/templates/{slug}/commit" method="post">
-  <input type="hidden" name="csv_text" value="{safe_csv.replace('"', '&quot;').replace(chr(10), '&#10;')}">
+  <input type="hidden" name="token" value="{token}">
   <div class="card">
     <label style="display:flex;gap:8px;align-items:center;font-size:13px">
       <input type="checkbox" name="keep_removed" value="1" checked>
