@@ -37,3 +37,4 @@ secrets/
 outbox.db
 agent-config.json
 dpapi-cache/
+.devdata/
