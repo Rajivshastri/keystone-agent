@@ -1,0 +1,45 @@
+{
+  "_comment": "Per-custodian config for automated trade dispatch. interface_type must match the WS Custody Interface dropdown. One download per MAPIN, one email per custodian with all MAPIN attachments.",
+  "_report_format_options": "XX = XLSX, X = XLS, C = CSV",
+  "_template_vars": "{mapin} = MAPIN ID, {strategy} = strategy name, {date} = trade date, {custodian} = custodian name",
+  "common": {
+    "account_sel": "A",
+    "account_type": "B",
+    "report_for": "BY-,SL+",
+    "report_opt": "TSB"
+  },
+  "custodians": {
+    "AXIS": {
+      "interface_type": "AXIS",
+      "report_format": "X",
+      "email_to": [],
+      "email_subject": "Trade Allocation - {mapin} - {date}",
+      "email_body": "Dear team,\n\nPlease find attached the trade allocation instructions for {mapin} for trades dated {date}.\n\nRegards,\nGoldStandard Wealth Pvt Ltd",
+      "send_from": "operations@thegoldstandard.in"
+    },
+    "HDFC": {
+      "interface_type": "HDFCBANK",
+      "report_format": "X",
+      "email_to": [],
+      "email_subject": "Trade Allocation - {mapin} - {date}",
+      "email_body": "Dear team,\n\nPlease find attached the trade allocation instructions for {mapin} for trades dated {date}.\n\nRegards,\nGoldStandard Wealth Pvt Ltd",
+      "send_from": "operations@thegoldstandard.in"
+    },
+    "ICICI": {
+      "interface_type": "ICICI BANK",
+      "report_format": "X",
+      "email_to": [],
+      "email_subject": "Trade Allocation - {mapin} - {date}",
+      "email_body": "Dear team,\n\nPlease find attached the trade allocation instructions for {mapin} for trades dated {date}.\n\nRegards,\nGoldStandard Wealth Pvt Ltd",
+      "send_from": "operations@thegoldstandard.in"
+    },
+    "KOTAK": {
+      "interface_type": "KOTAK - CUSTODY",
+      "report_format": "X",
+      "email_to": [],
+      "email_subject": "Trade Allocation - {mapin} - {date}",
+      "email_body": "Dear team,\n\nPlease find attached the trade allocation instructions for {mapin} for trades dated {date}.\n\nRegards,\nGoldStandard Wealth Pvt Ltd",
+      "send_from": "shabnam@thegoldstandard.in"
+    }
+  }
+}

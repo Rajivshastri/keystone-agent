@@ -1,0 +1,86 @@
+{
+  "strategy_mappings": [
+    {
+      "id": "axis_goldetepms",
+      "source": "axis",
+      "broker_code": "GOLDETEPMS",
+      "display_name": "Eterna Wealth Core Portfolio",
+      "default_ws_scheme_code": "GOLDETEPMS",
+      "conditional_rules": [
+        {
+          "if_client_id_prefix": "FOF",
+          "then_ws_scheme_code": "GOLDFOFPMS"
+        }
+      ]
+    },
+    {
+      "id": "axis_goldfofpms",
+      "source": "axis",
+      "broker_code": "GOLDFOFPMS",
+      "display_name": "GoldStandard Wealth FoF Portfolio",
+      "default_ws_scheme_code": "GOLDFOFPMS",
+      "conditional_rules": []
+    },
+    {
+      "id": "axis_goldfalpms",
+      "source": "axis",
+      "broker_code": "GOLDFALPMS",
+      "display_name": "GoldStandard Focused Alpha Portfolio",
+      "default_ws_scheme_code": "ALPH00001",
+      "conditional_rules": []
+    },
+    {
+      "id": "icici_goldcgt",
+      "source": "icici",
+      "broker_code": "GOLDCGT",
+      "display_name": "Compass TrueNorth Portfolio",
+      "default_ws_scheme_code": "GOLDCGT",
+      "conditional_rules": []
+    },
+    {
+      "id": "icici_goldwevpms",
+      "source": "icici",
+      "broker_code": "GOLDWEVPMS",
+      "display_name": "Mystic Wealth Value Portfolio",
+      "default_ws_scheme_code": "MYSTICV",
+      "conditional_rules": []
+    },
+    {
+      "id": "icici_goldwempms",
+      "source": "icici",
+      "broker_code": "GOLDWEMPMS",
+      "display_name": "Mystic Wealth Momentum Portfolio",
+      "default_ws_scheme_code": "MYSTICM",
+      "conditional_rules": []
+    },
+    {
+      "id": "kotak_mystic_weva",
+      "source": "kotak",
+      "broker_code": "MYSTIC_WEVA",
+      "display_name": "Mystic Wealth Value Portfolio",
+      "default_ws_scheme_code": "9000032175",
+      "conditional_rules": []
+    },
+    {
+      "id": "kotak_mystic_wemo",
+      "source": "kotak",
+      "broker_code": "MYSTIC_WEMO",
+      "display_name": "Mystic Wealth Momentum Portfolio",
+      "default_ws_scheme_code": "9000032176",
+      "conditional_rules": []
+    },
+    {
+      "id": "hdfc_gwpj",
+      "source": "hdfc",
+      "broker_code": "GWPJ",
+      "display_name": "Aristos Equity Portfolio",
+      "default_ws_scheme_code": "GWPJ0004",
+      "conditional_rules": [
+        {
+          "if_client_id": "GWPJ0016",
+          "then_ws_scheme_code": "GWPJ0016"
+        }
+      ]
+    }
+  ]
+}

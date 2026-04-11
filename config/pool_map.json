@@ -1,0 +1,142 @@
+{
+  "pools": [
+    {
+      "dealer_account": "GSWP_WEVA_ICICI",
+      "mapin": "MYSTICV",
+      "pool_name": "Mystic Wealth Value Portfolio",
+      "scheme_name": "MYSTIC WEALTH VALUE PORTFOLIO",
+      "custodian": "ICICI BANK LIMITED",
+      "ws_scheme_names": [
+        "mystic wealth value portfolio"
+      ]
+    },
+    {
+      "dealer_account": "GSWP_WEMO_ICICI",
+      "mapin": "MYSTICM",
+      "pool_name": "Mystic Wealth Momentum Portfolio",
+      "scheme_name": "MYSTIC WEALTH MOMENTUM PORTFOLIO",
+      "custodian": "ICICI BANK LIMITED",
+      "ws_scheme_names": [
+        "mystic wealth momentum portfolio"
+      ]
+    },
+    {
+      "dealer_account": "GSWP_WEVA_KOTAK",
+      "mapin": "204496800",
+      "pool_name": "Mystic Wealth Value Portfolio Kotak",
+      "scheme_name": "MYSTIC WEALTH VALUE PORTFOLIO KOTAK",
+      "custodian": "KOTAK MAHINDRA BANK LTD",
+      "ws_scheme_names": [
+        "mystic wealth value portfolio kotak"
+      ]
+    },
+    {
+      "dealer_account": "GSWP_WEMO_KOTAK",
+      "mapin": "204496980",
+      "pool_name": "Mystic Wealth Momentum Portfolio Kotak",
+      "scheme_name": "MYSTIC WEALTH MOMENTUM PORTFOLIO KOTAK",
+      "custodian": "KOTAK MAHINDRA BANK LTD",
+      "ws_scheme_names": [
+        "mystic wealth momentum portfolio kotak"
+      ]
+    },
+    {
+      "dealer_account": "GSWP_ARISTOS",
+      "mapin": "GWPJ0004",
+      "pool_name": "Aristos Equity Portfolio",
+      "scheme_name": "ARISTOS EQUITY PORTFOLIO",
+      "custodian": "HDFC BANK LIMITED",
+      "ws_scheme_names": [
+        "aristos equity portfolio"
+      ]
+    },
+    {
+      "dealer_account": "GSWP_WCORE",
+      "mapin": "GOLDETEPMS",
+      "pool_name": "Eterna Wealth Core Portfolio",
+      "scheme_name": "ETERNA WEALTH CORE PORTFOLIO",
+      "custodian": "AXIS BANK LTD",
+      "ws_scheme_names": [
+        "eterna wealth core portfolio"
+      ]
+    },
+    {
+      "dealer_account": "",
+      "mapin": "GOLDFOFPMS",
+      "pool_name": "GoldStandard Wealth FoF Portfolio",
+      "scheme_name": "GOLDSTANDARD WEALTH FOF PORTFOLIO",
+      "custodian": "AXIS BANK LTD",
+      "ws_scheme_names": [
+        "goldstandard wealth fof portfolio"
+      ]
+    },
+    {
+      "dealer_account": "",
+      "mapin": "GOLDCGT",
+      "pool_name": "Compass TrueNorth Portfolio",
+      "scheme_name": "COMPASS TRUENORTH PORTFOLIO",
+      "custodian": "ICICI BANK LIMITED",
+      "ws_scheme_names": [
+        "compass truenorth portfolio"
+      ]
+    },
+    {
+      "dealer_account": "GSWP_FALPMS",
+      "mapin": "GOLDFALPMS",
+      "pool_name": "GoldStandard Focused Alpha Portfolio",
+      "scheme_name": "GOLDSTANDARD FOCUSED ALPHA PORTFOLIO",
+      "custodian": "AXIS BANK LTD",
+      "ws_scheme_names": [
+        "goldstandard wealth pvt ltd focusedalpha",
+        "goldstandard focused alpha portfolio"
+      ]
+    },
+    {
+      "dealer_account": "GSWP_WEMO_ICICI",
+      "mapin": "25281",
+      "pool_name": "Mystic Wealth Momentum Portfolio",
+      "scheme_name": "GOLDSTANDARD WEALTH PVT LTD MYSTIC WEMO",
+      "custodian": "ICICI BANK LIMITED",
+      "_note": "ICICI back-office client code alias for MYSTICM mapin",
+      "canonical_mapin": "MYSTICM"
+    },
+    {
+      "dealer_account": "GSWP_WEMO_KOTAK",
+      "mapin": "24708",
+      "pool_name": "Mystic Wealth Momentum Portfolio Kotak",
+      "scheme_name": "GOLDSTANDARD MYSTIC WEALTH MOMENTUM PORTFOLIO KOTAK",
+      "custodian": "KOTAK MAHINDRA BANK LTD",
+      "_note": "ICICI back-office client code alias for 204496980 mapin",
+      "canonical_mapin": "204496980"
+    },
+    {
+      "dealer_account": "GSWP_ARISTOS",
+      "mapin": "HDFC00001816",
+      "pool_name": "Aristos Equity Portfolio",
+      "scheme_name": "ARISTOS EQUITY PORTFOLIO",
+      "custodian": "HDFC BANK LIMITED",
+      "_note": "Motilal UCC/Custodian Code alias for GWPJ0004 mapin",
+      "canonical_mapin": "GWPJ0004"
+    },
+    {
+      "mapin": "INST22266",
+      "canonical_mapin": "MYSTICV",
+      "note": "MysticV ICICI SEBI UCC"
+    },
+    {
+      "mapin": "INST21835",
+      "canonical_mapin": "204496800",
+      "note": "WEVA KOTAK SEBI UCC"
+    },
+    {
+      "mapin": "INST21860",
+      "canonical_mapin": "GWPJ0004",
+      "note": "Aristos HDFC SEBI UCC"
+    },
+    {
+      "mapin": "INST22265",
+      "canonical_mapin": "MYSTICM",
+      "note": "MysticM ICICI SEBI UCC"
+    }
+  ]
+}
