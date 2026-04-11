@@ -55,7 +55,22 @@ class ColumnSpec:
             if s == "":
                 return 0.0
             return float(s)
+        if self.kind == "list_semi":
+            if not s:
+                return []
+            return [part.strip() for part in s.split(";") if part.strip()]
         return s
+
+    def to_csv_cell(self, v: Any) -> Any:
+        if self.kind == "bool":
+            return 1 if v else 0
+        if self.kind == "list_semi":
+            if v is None:
+                return ""
+            if isinstance(v, list):
+                return ";".join(str(x) for x in v)
+            return str(v)
+        return v if v is not None else ""
 
 
 # ── Template definition ─────────────────────────────────────────────── #
@@ -119,6 +134,179 @@ def _save_pools_hub(path: Path, rows: list[dict[str, Any]]) -> None:
     tmp.replace(path)
 
 
+# ── sources template (sources.json) ─────────────────────────────────── #
+
+SOURCE_COLUMNS: list[ColumnSpec] = [
+    ColumnSpec("name", required=True, help="Short unique source id"),
+    ColumnSpec("display_name", required=True),
+    ColumnSpec("active", kind="bool", required=True),
+    ColumnSpec("is_bank", kind="bool", help="1 for bank statement, 0 for holdings"),
+    ColumnSpec("parser", required=True, help="Parser name from PARSER_REGISTRY"),
+    ColumnSpec("sender_email", help="From-address filter"),
+    ColumnSpec("subject_keyword", help="Substring the subject must contain"),
+    ColumnSpec("subject_prefix"),
+    ColumnSpec("zip_name_prefix"),
+    ColumnSpec("zip_password"),
+    ColumnSpec("file_password"),
+    ColumnSpec("file_date_offset", kind="int", help="Days between email date and file date"),
+    ColumnSpec("take_last_only", kind="bool"),
+    ColumnSpec("attachment_type", help="zip / txt_or_csv / zip_aes256 / csv_in_zip"),
+]
+SOURCE_KEY = ("name",)
+
+
+def _load_sources(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    with open(path) as f:
+        data = json.load(f) or {}
+    return list(data.get("sources", []))
+
+
+def _save_sources(path: Path, rows: list[dict[str, Any]]) -> None:
+    if path.exists():
+        with open(path) as f:
+            data = json.load(f) or {}
+    else:
+        data = {"sources": []}
+    data["sources"] = rows
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+# ── strategy_mappings template (mappings.json) ──────────────────────── #
+
+MAPPING_COLUMNS: list[ColumnSpec] = [
+    ColumnSpec("id", required=True, help="Unique mapping row id"),
+    ColumnSpec("source", required=True, help="Custodian source name"),
+    ColumnSpec("broker_code", required=True),
+    ColumnSpec("display_name"),
+    ColumnSpec("default_ws_scheme_code", required=True),
+]
+MAPPING_KEY = ("id",)
+
+
+def _load_mappings(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    with open(path) as f:
+        data = json.load(f) or {}
+    return list(data.get("strategy_mappings", []))
+
+
+def _save_mappings(path: Path, rows: list[dict[str, Any]]) -> None:
+    if path.exists():
+        with open(path) as f:
+            data = json.load(f) or {}
+    else:
+        data = {"strategy_mappings": []}
+    data["strategy_mappings"] = rows
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+# ── custodian_dispatch template (custodian_dispatch.json) ───────────── #
+
+DISPATCH_COLUMNS: list[ColumnSpec] = [
+    ColumnSpec("custodian", required=True, help="Custodian key (ICICI / HDFC / KOTAK / AXIS)"),
+    ColumnSpec("interface_type", required=True, help="WS Custody Interface label"),
+    ColumnSpec("report_format", required=True, help="XX=XLSX, X=XLS, C=CSV"),
+    ColumnSpec("email_to", kind="list_semi", help="Recipients, semicolon separated"),
+    ColumnSpec("email_subject"),
+    ColumnSpec("email_body"),
+    ColumnSpec("send_from"),
+]
+DISPATCH_KEY = ("custodian",)
+
+
+def _load_dispatch(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    with open(path) as f:
+        data = json.load(f) or {}
+    out: list[dict[str, Any]] = []
+    for key, cfg in (data.get("custodians") or {}).items():
+        row = {"custodian": key}
+        row.update(cfg or {})
+        out.append(row)
+    return out
+
+
+def _save_dispatch(path: Path, rows: list[dict[str, Any]]) -> None:
+    if path.exists():
+        with open(path) as f:
+            data = json.load(f) or {}
+    else:
+        data = {"custodians": {}}
+    custodians: dict[str, Any] = dict(data.get("custodians") or {})
+    for row in rows:
+        key = row.get("custodian")
+        if not key:
+            continue
+        existing = dict(custodians.get(key) or {})
+        for col in DISPATCH_COLUMNS:
+            if col.name == "custodian":
+                continue
+            existing[col.name] = row.get(col.name, existing.get(col.name))
+        custodians[key] = existing
+    data["custodians"] = custodians
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+# ── calendar_dates template (calendar.json) ─────────────────────────── #
+
+CALENDAR_COLUMNS: list[ColumnSpec] = [
+    ColumnSpec("date", required=True, help="ISO date YYYY-MM-DD"),
+    ColumnSpec(
+        "kind",
+        required=True,
+        help="holiday / working_weekend / no_trade_day",
+    ),
+]
+CALENDAR_KEY = ("date", "kind")
+
+_CAL_BUCKETS = {
+    "holiday": "holidays",
+    "working_weekend": "working_weekends",
+    "no_trade_day": "no_trade_days",
+}
+
+
+def _load_calendar(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    with open(path) as f:
+        data = json.load(f) or {}
+    out: list[dict[str, Any]] = []
+    for kind, bucket in _CAL_BUCKETS.items():
+        for d in data.get(bucket) or []:
+            out.append({"date": d, "kind": kind})
+    return out
+
+
+def _save_calendar(path: Path, rows: list[dict[str, Any]]) -> None:
+    data: dict[str, list[str]] = {b: [] for b in _CAL_BUCKETS.values()}
+    for row in rows:
+        kind = row.get("kind")
+        date = row.get("date")
+        bucket = _CAL_BUCKETS.get(kind or "")
+        if not bucket or not date:
+            continue
+        if date not in data[bucket]:
+            data[bucket].append(date)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
 # ── Registry ────────────────────────────────────────────────────────── #
 
 TEMPLATES: dict[str, TemplateSpec] = {
@@ -135,6 +323,62 @@ TEMPLATES: dict[str, TemplateSpec] = {
         loader=_load_pools_hub,
         saver=_save_pools_hub,
         backing_file="pools_hub.json",
+    ),
+    "sources": TemplateSpec(
+        slug="sources",
+        title="Email sources",
+        description=(
+            "Custodian and bank email sources the ingester watches. One "
+            "row per inbound feed — holdings files, bank statements, bank "
+            "balances. Parser name must match a registered parser."
+        ),
+        columns=SOURCE_COLUMNS,
+        key=SOURCE_KEY,
+        loader=_load_sources,
+        saver=_save_sources,
+        backing_file="sources.json",
+    ),
+    "strategy_mappings": TemplateSpec(
+        slug="strategy_mappings",
+        title="Strategy mappings",
+        description=(
+            "Broker-code → WS-scheme-code map. One row per (source, "
+            "broker_code) pair. Conditional FoF rules live outside the "
+            "template and are preserved verbatim on round-trip."
+        ),
+        columns=MAPPING_COLUMNS,
+        key=MAPPING_KEY,
+        loader=_load_mappings,
+        saver=_save_mappings,
+        backing_file="mappings.json",
+    ),
+    "custodian_dispatch": TemplateSpec(
+        slug="custodian_dispatch",
+        title="Custodian dispatch",
+        description=(
+            "Per-custodian trade-dispatch email config. Recipients live "
+            "in the email_to column as a semicolon-separated list. The "
+            "common/report_for defaults live outside the template."
+        ),
+        columns=DISPATCH_COLUMNS,
+        key=DISPATCH_KEY,
+        loader=_load_dispatch,
+        saver=_save_dispatch,
+        backing_file="custodian_dispatch.json",
+    ),
+    "calendar_dates": TemplateSpec(
+        slug="calendar_dates",
+        title="Calendar overrides",
+        description=(
+            "Holidays, working weekends, and no-trade days. One row per "
+            "(date, kind) pair. The scheduler consults this to decide "
+            "whether a scheduled run should fire on a given calendar day."
+        ),
+        columns=CALENDAR_COLUMNS,
+        key=CALENDAR_KEY,
+        loader=_load_calendar,
+        saver=_save_calendar,
+        backing_file="calendar.json",
     ),
 }
 
@@ -172,14 +416,9 @@ def export_csv(slug: str) -> str:
     w = csv.DictWriter(buf, fieldnames=headers, extrasaction="ignore")
     w.writeheader()
     for row in rows:
-        # Strings passthrough; bools as 1/0 so round-tripping is lossless
         out_row: dict[str, Any] = {}
         for col in t.columns:
-            v = row.get(col.name, "")
-            if col.kind == "bool":
-                out_row[col.name] = 1 if v else 0
-            else:
-                out_row[col.name] = v if v is not None else ""
+            out_row[col.name] = col.to_csv_cell(row.get(col.name, ""))
         w.writerow(out_row)
     return buf.getvalue()
 
@@ -268,8 +507,16 @@ def parse_and_diff(slug: str, csv_text: str) -> tuple[DiffResult, list[dict[str,
 
 
 def _shallow_equal(a: dict, b: dict, keys: list[str]) -> bool:
+    # Treat missing keys, None, and "" as equal so that adding new
+    # optional columns to a template doesn't mark every existing row
+    # as "changed" on the first round-trip.
+    def norm(v: Any) -> Any:
+        if v is None or v == "":
+            return None
+        return v
+
     for k in keys:
-        if a.get(k) != b.get(k):
+        if norm(a.get(k)) != norm(b.get(k)):
             return False
     return True
 
