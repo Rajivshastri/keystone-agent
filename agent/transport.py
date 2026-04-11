@@ -101,6 +101,34 @@ class ControlPlaneClient:
         )
         return RunPushResponse.model_validate(resp)
 
+    def upload_file_request(
+        self, upload_path: str, filename: str, data: bytes
+    ) -> dict[str, Any]:
+        """PUT raw bytes to the control plane to fulfil a file_request.
+
+        The upload_path is an agent-relative URL handed to us in the
+        poll response, e.g. "/api/v1/agent/file-requests/{id}/upload".
+        We send bytes as-is with an X-Keystone-Filename header so the
+        control plane can record the original filename on the row.
+        """
+        headers: dict[str, str] = {
+            "Content-Type": "application/octet-stream",
+            "X-Keystone-Filename": filename,
+        }
+        headers.update(self._auth_headers())
+        try:
+            resp = self._client.post(upload_path, content=data, headers=headers)
+        except httpx.HTTPError as e:
+            raise TransportError(f"{upload_path} network error: {e}") from e
+        if resp.status_code >= 400:
+            raise TransportError(
+                f"{upload_path} {resp.status_code}: {resp.text[:300]}"
+            )
+        try:
+            return resp.json()  # type: ignore[no-any-return]
+        except ValueError as e:
+            raise TransportError(f"{upload_path} bad JSON response") from e
+
     def health(self, ping: HealthPing) -> HealthResponse:
         resp = self._post_json(
             "/api/v1/agent/health",

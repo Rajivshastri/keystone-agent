@@ -15,8 +15,9 @@ import time
 from datetime import datetime, timezone
 
 from .config import AgentSettings, load_settings
+from .local_runs import get_store as get_local_runs
 from .outbox import get_outbox
-from .protocol import HealthPing, PollJob, RunPush
+from .protocol import FileRequestJob, HealthPing, PollJob, RunPush
 from .runner import execute_job
 from .transport import ControlPlaneClient, TransportError
 
@@ -131,11 +132,68 @@ class PollLoop:
             )
             # Phase 4: auto-updater flow
 
+        # 3) Fulfil any file_requests handed down in the poll envelope.
+        #    These are independent of normal jobs — the operator asked
+        #    for a specific local artifact and we upload it back up.
+        if resp.file_requests:
+            logger.info(
+                f"Received {len(resp.file_requests)} file request(s) from control plane"
+            )
+            for fr in resp.file_requests:
+                try:
+                    self._fulfil_file_request(fr)
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(f"File request {fr.id} fulfil crashed: {e}")
+
         if not resp.jobs:
             return
         logger.info(f"Received {len(resp.jobs)} job(s) from control plane")
         for job in resp.jobs:
             self._execute_and_push(job)
+
+    def _fulfil_file_request(self, fr: FileRequestJob) -> None:
+        """Read a local artifact and upload it to the control plane.
+
+        The control plane gave us a job_id that we use to look up the
+        local_runs row; that row carries the absolute on-disk path of
+        the Excel artifact the agent wrote for that run. Anything that
+        isn't resolvable is logged and left pending — the control
+        plane operator can retry or cancel.
+        """
+        if not fr.job_id:
+            logger.warning(f"File request {fr.id} has no job_id — skipping")
+            return
+        row = get_local_runs().get(fr.job_id)
+        if row is None:
+            logger.warning(
+                f"File request {fr.id}: no local_runs row for job {fr.job_id}"
+            )
+            return
+        from pathlib import Path
+
+        p = Path(row.output_path)
+        if not p.is_file():
+            logger.warning(
+                f"File request {fr.id}: artifact missing on disk: {row.output_path}"
+            )
+            return
+        try:
+            data = p.read_bytes()
+        except OSError as e:
+            logger.warning(f"File request {fr.id}: read failed: {e}")
+            return
+        logger.info(
+            f"File request {fr.id}: uploading {p.name} ({len(data)} bytes) "
+            f"to {fr.upload_url}"
+        )
+        try:
+            result = self._client.upload_file_request(
+                fr.upload_url, p.name, data
+            )
+        except TransportError as e:
+            logger.warning(f"File request {fr.id}: upload failed: {e}")
+            return
+        logger.info(f"File request {fr.id}: upload ok — {result}")
 
     # ---- dispatch ---- #
 

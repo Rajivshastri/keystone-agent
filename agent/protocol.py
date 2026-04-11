@@ -73,8 +73,16 @@ class UpdateNotification(BaseModel):
     required: bool = False
 
 
+class FileRequestJob(BaseModel):
+    id: str
+    job_id: str | None
+    run_id: str | None
+    upload_url: str
+
+
 class PollResponse(BaseModel):
     jobs: list[PollJob]
+    file_requests: list[FileRequestJob] = Field(default_factory=list)
     update: UpdateNotification | None = None
 
 
