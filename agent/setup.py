@@ -36,9 +36,16 @@ EK_WS_USERNAME = "ws_portal_username"
 EK_WS_CLIENT_CODE = "ws_portal_client_code"
 
 
-# Custodians that ship zip-encrypted statements today. Keep in sync with
-# what the legacy in-house app stored in azure.json / sources.json.
-CUSTODIANS_WITH_ZIP_PASSWORDS = ("hdfc", "axis")
+# Custodians whose feeds require a password to decrypt. All four active
+# custodians need one today:
+#   icici — zip password on the envelope
+#   hdfc  — zip password on the envelope
+#   kotak — zip password on the envelope
+#   axis  — zip is unencrypted, the .xlsx *inside* is AES-256 password
+#           protected (msoffcrypto-tool decrypts it in the parser)
+# The wizard collects a single password per source — the parser knows
+# whether to apply it to the outer zip or the inner file.
+CUSTODIANS_WITH_ZIP_PASSWORDS = ("icici", "hdfc", "kotak", "axis")
 
 
 # ── Step definitions ─────────────────────────────────────────────────── #
