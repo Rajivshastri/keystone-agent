@@ -800,7 +800,8 @@ def _auto_dispatch_trades(
                 "dispatch_emails_ok": n_ok,
             }
         else:
-            msg = upload_detail or "unknown"
+            upload_msg = getattr(result.upload_result, "message", "") if result.upload_result else ""
+            msg = upload_detail or upload_msg or "unknown"
             log(f"Dispatch failed — upload: {msg}", level="warning")
             return {"dispatch": f"failed: {msg}"}
     except Exception as e:  # noqa: BLE001

@@ -143,7 +143,7 @@ UPLOAD_FORM_URL = "redirect.do?target=queryTradePosting&scope=*&cmScope=*&menuDi
 MAP_ID_0096 = "96"
 
 
-def upload_0096(file_path: str, progress_cb=None) -> UploadResult:
+def upload_0096(file_path: str, progress_cb=None, config_dir: Path = None) -> UploadResult:
     """
     Upload a 0096 XLS file to WealthSpectrum.
 
@@ -159,7 +159,9 @@ def upload_0096(file_path: str, progress_cb=None) -> UploadResult:
         return UploadResult(False, f"File not found: {fpath}")
 
     base = _base_url()
-    auth_cache = Path(__file__).parent / "config" / "ws_upload_auth.json"
+    if config_dir is None:
+        config_dir = Path(__file__).parent / "config"
+    auth_cache = config_dir / "ws_upload_auth.json"
 
     session = _requests.Session()
     session.headers.update({
@@ -283,7 +285,7 @@ def upload_0096(file_path: str, progress_cb=None) -> UploadResult:
     log.info(f"Step 3b — counts: {counts}")
 
     # Save for debugging
-    dump_dir = Path(__file__).parent / "data" / "ws_upload_probe"
+    dump_dir = config_dir.parent / "ws_upload_probe" if config_dir else Path(__file__).parent / "data" / "ws_upload_probe"
     dump_dir.mkdir(parents=True, exist_ok=True)
     (dump_dir / "step3_result.html").write_text(r3b.text, encoding="utf-8", errors="replace")
 
@@ -463,7 +465,7 @@ def dispatch_trades(file_0096: str, date_str: str,
         workdir = Path(__file__).parent
 
     # Step 1: Upload 0096
-    upload_result = upload_0096(file_0096, progress_cb=progress_cb)
+    upload_result = upload_0096(file_0096, progress_cb=progress_cb, config_dir=config_dir)
     if not upload_result.ok and upload_result.detail != "duplicate":
         return DispatchResult(False, upload_result, [])
 
