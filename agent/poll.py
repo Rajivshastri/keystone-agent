@@ -105,6 +105,21 @@ class PollLoop:
     def _tick(self) -> None:
         settings = load_settings()
 
+        # If the control plane URL changed (e.g. operator filled in the
+        # wizard while the poll loop was already running with the old
+        # default), recreate the httpx client so it hits the new host.
+        if settings.control_plane_url != self._settings.control_plane_url:
+            logger.info(
+                f"Control plane URL changed: {self._settings.control_plane_url} "
+                f"→ {settings.control_plane_url} — reconnecting"
+            )
+            self._settings = settings
+            try:
+                self._client.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._client = ControlPlaneClient(settings)
+
         # Heartbeat every 60s regardless of poll cadence
         now = time.monotonic()
         if now - self._last_heartbeat_at >= 60.0:
