@@ -1711,7 +1711,8 @@ def write_trade_recon_report(summary: TradeReconSummary, out_path: str):
     # ── Summary sheet ─────────────────────────────────────────────────────
     ws_sum = wb.active; ws_sum.title = 'Summary'
     ws_sum.merge_cells('A1:F1')
-    ws_sum['A1'] = f'Trade Reconciliation Report — {summary.date}'
+    from core.date_format import display_date as _disp_d
+    ws_sum['A1'] = f'Trade Reconciliation Report — {_disp_d(summary.date)}'
     ws_sum['A1'].font = Font(bold=True, size=14, color='1B2A4A')
     ws_sum['A1'].alignment = Alignment(horizontal='center', vertical='center')
     ws_sum.row_dimensions[1].height = 28

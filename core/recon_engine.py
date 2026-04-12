@@ -826,7 +826,8 @@ class ReconEngine:
         # Title
         ws.merge_cells('A1:H1')
         title_cell = ws['A1']
-        title_cell.value = f'Holdings Reconciliation Report — {date_str}'
+        from core.date_format import display_date as _disp_d
+        title_cell.value = f'Holdings Reconciliation Report — {_disp_d(date_str)}'
         title_cell.font  = Font(bold=True, size=14, color=C_WHITE, name='Calibri')
         title_cell.fill  = PatternFill('solid', fgColor=C_NAVY)
         title_cell.alignment = Alignment(horizontal='center', vertical='center')

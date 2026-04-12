@@ -24,14 +24,14 @@ log = logging.getLogger(__name__)
 
 
 def _display_date(date_str: str) -> str:
-    """Convert YYYY-MM-DD to DD-MM-YYYY for display in emails and reports."""
-    try:
-        parts = date_str.split("-")
-        if len(parts) == 3:
-            return f"{parts[2]}-{parts[1]}-{parts[0]}"
-    except Exception:
-        pass
-    return date_str
+    """Convert YYYY-MM-DD to DD-MM-YYYY for display in emails and reports.
+
+    Thin wrapper over the shared core.date_format.display_date so legacy
+    callers in this module keep working while the rest of the code base
+    standardises on the shared helper.
+    """
+    from core.date_format import display_date as _disp_d
+    return _disp_d(date_str)
 
 
 # ── Credentials ──────────────────────────────────────────────────────────────

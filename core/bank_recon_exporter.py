@@ -135,7 +135,8 @@ def _build_summary_sheet(ws, summary: dict[str, Any], recon_date: str) -> None:
     # Title banner
     ws.merge_cells("A1:F1")
     cell = ws["A1"]
-    cell.value = f"Keystone — Bank Reconciliation {recon_date}"
+    from core.date_format import display_date as _disp_d
+    cell.value = f"Keystone — Bank Reconciliation {_disp_d(recon_date)}"
     cell.font = Font(bold=True, color=NAVY, size=14)
     cell.alignment = LEFT
 
@@ -209,7 +210,8 @@ def _build_detail_sheet(ws, summary: dict[str, Any]) -> None:
     # Title banner
     ws.merge_cells("A1:I1")
     cell = ws["A1"]
-    cell.value = f"Pool Detail — {summary.get('date') or ''}"
+    from core.date_format import display_date as _disp_d
+    cell.value = f"Pool Detail — {_disp_d(summary.get('date') or '')}"
     cell.font = Font(bold=True, color=NAVY, size=13)
     cell.alignment = LEFT
 
