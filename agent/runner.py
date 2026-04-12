@@ -579,17 +579,24 @@ def _auto_dispatch_trades(
             progress_cb=progress,
         )
 
-        if result.ok:
+        # Treat duplicate upload as success — the 0096 was already in WS
+        # from a prior run or manual upload. The custody dispatch should
+        # still proceed (and does inside dispatch_trades).
+        upload_detail = getattr(result.upload_result, "detail", "") if result.upload_result else ""
+        is_dup = upload_detail == "duplicate"
+
+        if result.ok or is_dup:
             n_cust = len(result.custodian_results)
             n_ok = sum(1 for c in result.custodian_results if c.get("email_ok"))
-            log(f"Dispatch complete — upload ok, {n_ok}/{n_cust} custodian emails sent")
+            dup_note = " (0096 was already uploaded)" if is_dup else ""
+            log(f"Dispatch complete{dup_note} — {n_ok}/{n_cust} custodian emails sent")
             return {
-                "dispatch": "ok",
+                "dispatch": "ok" if not is_dup else "ok_duplicate",
                 "dispatch_custodians": n_cust,
                 "dispatch_emails_ok": n_ok,
             }
         else:
-            msg = getattr(result.upload_result, "detail", "unknown") if result.upload_result else "unknown"
+            msg = upload_detail or "unknown"
             log(f"Dispatch failed — upload: {msg}", level="warning")
             return {"dispatch": f"failed: {msg}"}
     except Exception as e:  # noqa: BLE001
