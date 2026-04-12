@@ -137,6 +137,15 @@
       "mapin": "INST22265",
       "canonical_mapin": "MYSTICM",
       "note": "MysticM ICICI SEBI UCC"
+    },
+    {
+      "dealer_account": "GSWP_ARISTOS",
+      "mapin": "24725",
+      "pool_name": "Aristos Equity Portfolio",
+      "scheme_name": "ARISTOS EQUITY PORTFOLIO",
+      "custodian": "HDFC BANK LIMITED",
+      "_note": "ICICI Securities back-office client code alias for GWPJ0004 mapin",
+      "canonical_mapin": "GWPJ0004"
     }
   ]
 }
