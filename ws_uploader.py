@@ -23,6 +23,17 @@ from bs4 import BeautifulSoup
 log = logging.getLogger(__name__)
 
 
+def _display_date(date_str: str) -> str:
+    """Convert YYYY-MM-DD to MM-DD-YYYY for display in emails and reports."""
+    try:
+        parts = date_str.split("-")
+        if len(parts) == 3:
+            return f"{parts[1]}-{parts[2]}-{parts[0]}"
+    except Exception:
+        pass
+    return date_str
+
+
 # ── Credentials ──────────────────────────────────────────────────────────────
 
 def _base_url() -> str:
@@ -566,10 +577,11 @@ def dispatch_trades(file_0096: str, date_str: str,
                               "instructions for {mapin} for trades dated {date}.\n\n"
                               "Regards,\nGoldStandard Wealth Pvt Ltd")
 
-        # Build subject: list all MAPINs
+        # Build subject: list all MAPINs. Display date as MM-DD-YYYY.
         mapin_list = ', '.join(m for m, _, _ in downloaded_files)
-        subject = subject_tpl.replace("{mapin}", mapin_list).replace("{date}", date_str).replace("{custodian}", cust)
-        body    = body_tpl.replace("{mapin}", mapin_list).replace("{date}", date_str).replace("{custodian}", cust)
+        display_date = _display_date(date_str)
+        subject = subject_tpl.replace("{mapin}", mapin_list).replace("{date}", display_date).replace("{custodian}", cust)
+        body    = body_tpl.replace("{mapin}", mapin_list).replace("{date}", display_date).replace("{custodian}", cust)
 
         file_names = [fp.name for _, _, fp in downloaded_files]
 
