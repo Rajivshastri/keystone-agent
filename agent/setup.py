@@ -33,7 +33,6 @@ EK_M365_TENANT_ID = "m365_tenant_id"
 EK_M365_CLIENT_ID = "m365_client_id"
 EK_M365_MAILBOX = "m365_mailbox"
 EK_WS_USERNAME = "ws_portal_username"
-EK_WS_CLIENT_CODE = "ws_portal_client_code"
 
 
 # Custodians whose feeds require a password to decrypt. All four active
@@ -74,7 +73,7 @@ def _m365_ok(s: AgentSettings) -> bool:
 
 def _ws_ok(s: AgentSettings) -> bool:
     extras = s.extras or {}
-    has_fields = all(extras.get(k) for k in (EK_WS_USERNAME, EK_WS_CLIENT_CODE))
+    has_fields = bool(extras.get(EK_WS_USERNAME))
     has_secret = bool(get_store().get(KEY_WS_PORTAL_PASSWORD))
     return has_fields and has_secret
 
@@ -167,7 +166,6 @@ def setup_state() -> dict[str, Any]:
             EK_M365_CLIENT_ID: extras.get(EK_M365_CLIENT_ID, ""),
             EK_M365_MAILBOX: extras.get(EK_M365_MAILBOX, ""),
             EK_WS_USERNAME: extras.get(EK_WS_USERNAME, ""),
-            EK_WS_CLIENT_CODE: extras.get(EK_WS_CLIENT_CODE, ""),
         },
         "secret_flags": {
             "m365_client_secret": bool(get_store().get(KEY_M365_CLIENT_SECRET)),
@@ -218,13 +216,11 @@ def save_m365(
 def save_ws_portal(
     *,
     username: str,
-    client_code: str,
     password: str | None,
 ) -> None:
     settings = load_settings()
     extras = dict(settings.extras or {})
     extras[EK_WS_USERNAME] = username.strip()
-    extras[EK_WS_CLIENT_CODE] = client_code.strip()
     settings.extras = extras
     save_settings(settings)
     if password:

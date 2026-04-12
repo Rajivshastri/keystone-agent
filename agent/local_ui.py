@@ -433,8 +433,6 @@ def create_app() -> FastAPI:
   <form action="/api/setup/ws-portal" method="post" autocomplete="off">
     <label for="ws_username">WS portal username</label>
     <input type="text" id="ws_username" name="ws_username" value="{extras.get('ws_portal_username','')}" required>
-    <label for="ws_client_code" style="margin-top:12px">Client code</label>
-    <input type="text" id="ws_client_code" name="ws_client_code" value="{extras.get('ws_portal_client_code','')}" required>
     <label for="ws_password" style="margin-top:12px">Portal password</label>
     <input type="password" id="ws_password" name="ws_password" placeholder="(enter once to save)" autocomplete="off">
     <div style="margin-top:4px">{_secret_state(secret_flags.get('ws_portal_password', False))}</div>
@@ -499,7 +497,6 @@ def create_app() -> FastAPI:
         try:
             save_ws_portal(
                 username=str(form.get("ws_username", "")),
-                client_code=str(form.get("ws_client_code", "")),
                 password=str(form.get("ws_password", "")) or None,
             )
         except Exception as e:  # noqa: BLE001
