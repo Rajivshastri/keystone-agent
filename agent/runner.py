@@ -527,22 +527,83 @@ def _run_trade(job: PollJob) -> RunPush:
 # ── Non-recon jobs (lightweight) ───────────────────────────────────── #
 
 
-def _run_fetch_emails(job: PollJob) -> RunPush:
-    """Pull custodian/bank emails via Microsoft Graph and extract them.
+def _build_trade_fetch_sources() -> list[dict]:
+    """Build fetch source entries for dealer/NSDL/exchange/broker CN emails.
 
-    Drives core.email_ingestor.EmailIngestor with credentials pulled
-    from agent settings + DPAPI secrets. Downloads each day's zips and
-    extracts them into the workdir's data/{date}/raw/{source}/ tree,
-    which is exactly what the holdings/bank recon workflows expect to
-    read from.
+    The Flask app built these dynamically from broker_map.json each time
+    it ran a fetch. We do the same so trade recon emails land under the
+    right raw/{source}/ subfolder alongside holdings and bank feeds.
+    """
+    broker_map = _load_config_json("broker_map.json")
+    fetch_sources: list[dict] = []
+
+    for ts in broker_map.get("trade_sources", []):
+        if not ts.get("active", True):
+            continue
+        fetch_sources.append({
+            "name": ts.get("name", "trade"),
+            "display_name": ts.get("display_name", ""),
+            "sender_email": ts.get("sender_email", ""),
+            "subject_keyword": ts.get("subject_keyword", ""),
+            "file_prefix": ts.get("file_prefix", ""),
+            "file_password": ts.get("file_password", ""),
+            "attachment_type": "direct",
+            "active": True,
+            "is_bank": False,
+            "file_date_offset": 0,
+        })
+
+    for b in broker_map.get("brokers", []):
+        if not b.get("active", True):
+            continue
+        sender = b.get("sender_email", "").strip()
+        domain = b.get("email_domain", "").strip()
+        effective = sender if sender else ("@" + domain if domain else "")
+        if not effective:
+            continue
+        fetch_sources.append({
+            "name": f'broker_cn_{b.get("dealer_code", "").lower()}',
+            "display_name": b["name"],
+            "sender_email": effective,
+            "subject_keyword": b.get("subject_keyword", "").strip(),
+            "attachment_type": "direct",
+            "active": True,
+            "is_bank": False,
+            "file_date_offset": 0,
+        })
+
+    return fetch_sources
+
+
+def _run_fetch_emails(job: PollJob) -> RunPush:
+    """Pull custodian/bank/trade emails via Microsoft Graph.
+
+    Supports single-date and multi-day range:
+      - Single: payload = {date: "2026-04-10"}
+      - Range:  payload = {date_from: "2026-04-08", date_to: "2026-04-10"}
+
+    Merges the static sources.json (custody/bank) with dynamic trade
+    sources built from broker_map.json (dealer files, broker CNs,
+    NSDL, exchange) — exactly as the Flask app did.
     """
     log = _LogCollector()
-    try:
-        date_str = _job_date(job)
-    except ValueError as e:
-        return _failed_push(job, "holdings", _now_iso()[:10], log, e)
+    payload = job.payload or {}
 
-    log(f"Starting email fetch for {date_str}")
+    # Support date range: if date_from + date_to are in payload, use range.
+    # Otherwise fall back to single-date via the 'date' field.
+    date_from = str(payload.get("date_from", "")).strip()
+    date_to = str(payload.get("date_to", "")).strip()
+    if date_from and date_to:
+        date_str = date_to  # use the end date as the canonical recon_date
+    else:
+        try:
+            date_str = _job_date(job)
+        except ValueError as e:
+            return _failed_push(job, "holdings", _now_iso()[:10], log, e)
+        date_from = date_str
+        date_to = date_str
+
+    log(f"Starting email fetch for {date_from} → {date_to}")
     settings = load_settings()
 
     from .secrets import KEY_M365_CLIENT_SECRET, get_store
@@ -568,9 +629,15 @@ def _run_fetch_emails(job: PollJob) -> RunPush:
         from core.email_ingestor import EmailIngestor
 
         fm = _file_manager(settings.workdir)
+
+        # Merge custody/bank sources with trade sources
         sources = _load_config_json("sources.json").get("sources", [])
-        if not sources:
-            log("sources.json is empty — nothing to fetch", level="warning")
+        trade_sources = _build_trade_fetch_sources()
+        all_sources = sources + trade_sources
+        log(f"Sources: {len(sources)} custody/bank + {len(trade_sources)} trade = {len(all_sources)} total")
+
+        if not all_sources:
+            log("No sources configured — nothing to fetch", level="warning")
             return RunPush(
                 job_id=job.id,
                 type="holdings",
@@ -583,10 +650,10 @@ def _run_fetch_emails(job: PollJob) -> RunPush:
             )
 
         ingestor = EmailIngestor(azure_cfg)
-        log(f"Walking {len(sources)} source(s) for {date_str}")
-        results = ingestor.fetch_for_date(
-            date_str=date_str,
-            sources=sources,
+        results = ingestor.fetch_for_range(
+            date_from=date_from,
+            date_to=date_to,
+            sources=all_sources,
             file_manager=fm,
             log_callback=log,
         )
@@ -607,7 +674,7 @@ def _run_fetch_emails(job: PollJob) -> RunPush:
                 "fetched": ok_count,
                 "skipped": skip_count,
                 "errors": err_count,
-                "sources": len(sources),
+                "sources": len(all_sources),
             },
             attachments_meta={},
             reminder_count=0,
@@ -618,20 +685,31 @@ def _run_fetch_emails(job: PollJob) -> RunPush:
 
 
 def _run_ws_download(job: PollJob) -> RunPush:
-    """Download WealthSpectrum master reports for the given date.
+    """Download WealthSpectrum master reports.
 
-    Mirrors the legacy Flask app's "Download WS masters" flow, driven
-    by ws_downloader.run_all_downloads. Credentials come from agent
-    settings (username) + DPAPI (password). The WS portal base URL is
-    either taken from FINCRM_URL (legacy env var) or defaulted.
+    Supports single-date and multi-day range:
+      - Single: payload = {date: "2026-04-10"}
+      - Range:  payload = {date_from: "2026-04-08", date_to: "2026-04-10"}
+
+    For a range, downloads are run once per date stepping from date_from
+    to date_to inclusive.
     """
     log = _LogCollector()
-    try:
-        date_str = _job_date(job)
-    except ValueError as e:
-        return _failed_push(job, "holdings", _now_iso()[:10], log, e)
+    payload = job.payload or {}
 
-    log(f"Starting WS download for {date_str}")
+    date_from = str(payload.get("date_from", "")).strip()
+    date_to = str(payload.get("date_to", "")).strip()
+    if date_from and date_to:
+        date_str = date_to
+    else:
+        try:
+            date_str = _job_date(job)
+        except ValueError as e:
+            return _failed_push(job, "holdings", _now_iso()[:10], log, e)
+        date_from = date_str
+        date_to = date_str
+
+    log(f"Starting WS download for {date_from} → {date_to}")
     settings = load_settings()
 
     from .secrets import KEY_WS_PORTAL_PASSWORD, get_store
@@ -652,10 +730,6 @@ def _run_ws_download(job: PollJob) -> RunPush:
         )
 
     try:
-        # ws_downloader.py reads credentials from environment variables
-        # so we can keep the legacy module untouched. Set them just for
-        # the duration of this call — we don't want other threads in
-        # the agent process seeing the password.
         prev = {
             "FINCRM_USER": os.environ.get("FINCRM_USER"),
             "FINCRM_PASS": os.environ.get("FINCRM_PASS"),
@@ -665,7 +739,6 @@ def _run_ws_download(job: PollJob) -> RunPush:
 
         from ws_downloader import run_all_downloads
 
-        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
         app_dir = Path(settings.workdir).resolve()
         app_dir.mkdir(parents=True, exist_ok=True)
 
@@ -673,33 +746,51 @@ def _run_ws_download(job: PollJob) -> RunPush:
             lvl = "error" if state == "error" else "info"
             log(f"WS {name}: {state} — {msg}", level=lvl)
 
-        # Restrict to the filter if the job payload asked for it
         reports_filter = None
-        payload = job.payload or {}
         if isinstance(payload.get("reports"), list):
             reports_filter = [str(r) for r in payload["reports"]]
 
+        # Build list of dates to download for
+        dt_from = datetime.strptime(date_from, "%Y-%m-%d")
+        dt_to = datetime.strptime(date_to, "%Y-%m-%d")
+        dates: list[datetime] = []
+        cursor = dt_from
+        while cursor <= dt_to:
+            dates.append(cursor)
+            cursor += __import__("datetime").timedelta(days=1)
+
+        total_success = 0
+        total_total = 0
+        total_errors = 0
+
         try:
-            result = run_all_downloads(
-                date_obj=date_obj,
-                app_dir=app_dir,
-                progress_cb=progress,
-                reports_filter=reports_filter,
-            )
+            for date_obj in dates:
+                ds = date_obj.strftime("%Y-%m-%d")
+                log(f"WS download: {ds}")
+                result = run_all_downloads(
+                    date_obj=date_obj,
+                    app_dir=app_dir,
+                    progress_cb=progress,
+                    reports_filter=reports_filter,
+                )
+                t = int(result.get("total", 0))
+                s = int(result.get("success_count", 0))
+                total_total += t
+                total_success += s
+                total_errors += t - s
+                log(f"WS {ds}: ok={s}/{t}")
         finally:
-            # Restore prior env (usually unset)
             for k, v in prev.items():
                 if v is None:
                     os.environ.pop(k, None)
                 else:
                     os.environ[k] = v
 
-        total = int(result.get("total", 0))
-        success = int(result.get("success_count", 0))
-        errors = total - success
-        log(f"WS download complete — ok={success}/{total} errors={errors}")
+        log(f"WS download complete — ok={total_success}/{total_total} errors={total_errors}")
         status: RunStatus = (
-            "all_clear" if errors == 0 and total > 0 else "breaks_found"
+            "all_clear"
+            if total_errors == 0 and total_total > 0
+            else "breaks_found"
         )
         return RunPush(
             job_id=job.id,
@@ -707,9 +798,10 @@ def _run_ws_download(job: PollJob) -> RunPush:
             recon_date=date_str,
             status=status,
             counts={
-                "downloaded": success,
-                "total": total,
-                "errors": errors,
+                "downloaded": total_success,
+                "total": total_total,
+                "errors": total_errors,
+                "days": len(dates),
             },
             attachments_meta={},
             reminder_count=0,

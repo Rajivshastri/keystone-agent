@@ -319,10 +319,19 @@ def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
                         _put(_bse_tick.upper(), _isin, _is_eq)
                     _added += 1
 
-                if str(sec_master_path).lower().endswith('.csv'):
+                _ext_z8 = str(sec_master_path).lower().rsplit('.', 1)[-1]
+                if _ext_z8 == 'csv':
                     with open(sec_master_path, newline='', encoding='utf-8-sig') as _f:
                         for _row in _csv.DictReader(_f):
                             _process_row({k.upper().strip(): v for k, v in _row.items()})
+                elif _ext_z8 == 'xls':
+                    import xlrd as _xlrd_z8
+                    _wb_z8 = _xlrd_z8.open_workbook(sec_master_path)
+                    _ws_z8 = _wb_z8.sheet_by_index(0)
+                    _headers_z8 = [str(_ws_z8.cell_value(0, cx) or '').upper().strip() for cx in range(_ws_z8.ncols)]
+                    for rx in range(1, _ws_z8.nrows):
+                        _process_row({_headers_z8[cx]: str(_ws_z8.cell_value(rx, cx) or '') for cx in range(_ws_z8.ncols) if cx < len(_headers_z8)})
+                    _wb_z8.release_resources()
                 else:
                     import openpyxl as _openpyxl_z8
                     _wb_z8 = _openpyxl_z8.load_workbook(sec_master_path, read_only=True, data_only=True)
