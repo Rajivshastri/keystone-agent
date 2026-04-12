@@ -228,6 +228,125 @@ def execute_job(job: PollJob) -> RunPush:
     )
 
 
+# ── Pre-reconciliation pipeline ────────────────────────────────────── #
+#
+# Every reconciliation job (holdings, bank, trade) starts by ensuring
+# the raw data is present: emails fetched + WS masters downloaded.
+# This mirrors the Flask app's daily workflow where the operator would
+# click "Fetch" then "Download" then "Reconcile" — Keystone collapses
+# all three into one job. If either pre-step fails, the reconciliation
+# still proceeds with whatever data is already on disk (same resilience
+# as the Flask app's manual flow).
+
+
+def _pre_reconciliation(
+    date_str: str, settings: AgentSettings, log: _LogCollector
+) -> None:
+    """Fetch emails + download WS masters for date_str.
+
+    Runs before every reconciliation. Failures are logged as warnings
+    but do NOT abort the reconciliation — the operator may have already
+    fetched manually, or some sources may be down while others worked.
+    """
+    # ── Step 1: Fetch emails (incremental from last_fetch_at) ──────
+    from .secrets import KEY_M365_CLIENT_SECRET, get_store
+    from .setup import EK_M365_CLIENT_ID, EK_M365_MAILBOX, EK_M365_TENANT_ID
+
+    extras = settings.extras or {}
+    azure_cfg = {
+        "tenant_id": extras.get(EK_M365_TENANT_ID, ""),
+        "client_id": extras.get(EK_M365_CLIENT_ID, ""),
+        "client_secret": get_store().get(KEY_M365_CLIENT_SECRET) or "",
+        "mailbox": extras.get(EK_M365_MAILBOX, ""),
+    }
+
+    if all(azure_cfg.values()):
+        try:
+            from core.email_ingestor import EmailIngestor
+
+            fm = _file_manager(settings.workdir)
+            sources = _load_config_json("sources.json").get("sources", [])
+            trade_sources = _build_trade_fetch_sources()
+            all_sources = sources + trade_sources
+
+            since = extras.get(EK_LAST_FETCH_AT)
+            if since:
+                log(f"Pre-fetch: incremental email fetch for {date_str} (since {since[:16]})")
+            else:
+                log(f"Pre-fetch: full email fetch for {date_str} (no prior fetch)")
+
+            ingestor = EmailIngestor(azure_cfg)
+            results = ingestor.fetch_for_range(
+                date_from=date_str,
+                date_to=date_str,
+                sources=all_sources,
+                file_manager=fm,
+                log_callback=lambda msg, **kw: log(f"Pre-fetch: {msg}", **kw),
+                since=since,
+            )
+
+            ok = sum(1 for r in results if r.get("status") == "ok")
+            err = sum(1 for r in results if r.get("status") == "error")
+            log(f"Pre-fetch complete: {ok} fetched, {err} errors")
+
+            # Update last_fetch_at
+            now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            settings = load_settings()
+            new_extras = dict(settings.extras or {})
+            new_extras[EK_LAST_FETCH_AT] = now_iso
+            settings.extras = new_extras
+            from .config import save_settings
+            save_settings(settings)
+        except Exception as e:  # noqa: BLE001
+            log(f"Pre-fetch failed (continuing with existing data): {e}", level="warning")
+    else:
+        log("Pre-fetch skipped — M365 credentials not configured", level="warning")
+
+    # ── Step 2: Download WS masters ────────────────────────────────
+    from .secrets import KEY_WS_PORTAL_PASSWORD
+    from .setup import EK_WS_USERNAME
+
+    ws_user = extras.get(EK_WS_USERNAME, "").strip()
+    ws_pass = (get_store().get(KEY_WS_PORTAL_PASSWORD) or "").strip()
+
+    if ws_user and ws_pass:
+        prev = {
+            "FINCRM_USER": os.environ.get("FINCRM_USER"),
+            "FINCRM_PASS": os.environ.get("FINCRM_PASS"),
+        }
+        os.environ["FINCRM_USER"] = ws_user
+        os.environ["FINCRM_PASS"] = ws_pass
+        try:
+            from ws_downloader import run_all_downloads
+
+            app_dir = Path(settings.workdir).resolve()
+            app_dir.mkdir(parents=True, exist_ok=True)
+            date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+
+            log(f"Pre-download: WS masters for {date_str}")
+            result = run_all_downloads(
+                date_obj=date_obj,
+                app_dir=app_dir,
+                progress_cb=lambda name, state, msg: log(
+                    f"Pre-download {name}: {msg}",
+                    level="error" if state == "error" else "info",
+                ),
+            )
+            s = int(result.get("success_count", 0))
+            t = int(result.get("total", 0))
+            log(f"Pre-download complete: {s}/{t} reports")
+        except Exception as e:  # noqa: BLE001
+            log(f"Pre-download failed (continuing with existing data): {e}", level="warning")
+        finally:
+            for k, v in prev.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    else:
+        log("Pre-download skipped — WS credentials not configured", level="warning")
+
+
 # ── Holdings ───────────────────────────────────────────────────────── #
 
 
@@ -238,8 +357,12 @@ def _run_holdings(job: PollJob) -> RunPush:
     except ValueError as e:
         return _failed_push(job, "holdings", _now_iso()[:10], log, e)
 
-    log(f"Starting holdings recon for {date_str}")
+    log(f"Starting holdings reconciliation for {date_str}")
     settings = load_settings()
+
+    # Auto-fetch emails + download WS masters before reconciliation
+    _pre_reconciliation(date_str, settings, log)
+    settings = load_settings()  # reload in case pre-step updated extras
     try:
         fm = _file_manager(settings.workdir)
 
@@ -275,7 +398,7 @@ def _run_holdings(job: PollJob) -> RunPush:
             log(w, level="warning")
 
         if not result.record_count:
-            log("No custodian records — cannot run holdings recon", level="error")
+            log("No custodian records — cannot run holdings reconciliation", level="error")
             return RunPush(
                 job_id=job.id,
                 type="holdings",
@@ -302,7 +425,7 @@ def _run_holdings(job: PollJob) -> RunPush:
 
         # Retag the engine-written file with Keystone_Holdings_{date}_{time}
         renamed = _keystone_rename(result.output_path, "holdings", date_str)
-        log(f"Holdings recon complete — report at {renamed}")
+        log(f"Holdings reconciliation complete — report at {renamed}")
         if renamed:
             _get_local_runs().record(job.id, "holdings", date_str, renamed)
 
@@ -345,7 +468,10 @@ def _run_bank(job: PollJob) -> RunPush:
     except ValueError as e:
         return _failed_push(job, "bank", _now_iso()[:10], log, e)
 
-    log(f"Starting bank recon for {date_str}")
+    log(f"Starting bank reconciliation for {date_str}")
+    settings = load_settings()
+
+    _pre_reconciliation(date_str, settings, log)
     settings = load_settings()
     try:
         fm = _file_manager(settings.workdir)
@@ -381,7 +507,7 @@ def _run_bank(job: PollJob) -> RunPush:
 
         summary_dict = summary.to_dict()
         log(
-            f"Bank recon complete — {summary_dict.get('total_pools', 0)} pools, "
+            f"Bank reconciliation complete — {summary_dict.get('total_pools', 0)} pools, "
             f"{summary_dict.get('clean', 0)} clean, {summary_dict.get('breaks', 0)} breaks"
         )
 
@@ -406,7 +532,7 @@ def _run_bank(job: PollJob) -> RunPush:
             )
             bank_output_path = _keystone_rename(raw_path, "bank", date_str)
             if bank_output_path:
-                log(f"Bank recon report: {bank_output_path}")
+                log(f"Bank reconciliation report: {bank_output_path}")
                 _get_local_runs().record(job.id, "bank", date_str, bank_output_path)
         except Exception as exp_err:  # noqa: BLE001
             log(f"Bank export failed: {exp_err}", level="warning")
@@ -440,7 +566,10 @@ def _run_trade(job: PollJob) -> RunPush:
     except ValueError as e:
         return _failed_push(job, "trade", _now_iso()[:10], log, e)
 
-    log(f"Starting trade recon for {date_str}")
+    log(f"Starting trade reconciliation for {date_str}")
+    settings = load_settings()
+
+    _pre_reconciliation(date_str, settings, log)
     settings = load_settings()
     try:
         fm = _file_manager(settings.workdir)
@@ -477,7 +606,7 @@ def _run_trade(job: PollJob) -> RunPush:
         else:
             summary_dict = {}
         log(
-            f"Trade recon complete — orders: {summary_dict.get('total_orders', 0)}, "
+            f"Trade reconciliation complete — orders: {summary_dict.get('total_orders', 0)}, "
             f"c1_breaks: {summary_dict.get('c1_breaks', 0)}, "
             f"c2_breaks: {summary_dict.get('c2_breaks', 0)}, "
             f"c3_breaks: {summary_dict.get('c3_breaks', 0)}"
@@ -504,7 +633,7 @@ def _run_trade(job: PollJob) -> RunPush:
         renamed_recon = _keystone_rename(recon_path, "trade", date_str)
         renamed_0096 = _keystone_rename(xlsx_0096, "trade", date_str)
         if renamed_recon:
-            log(f"Trade recon report: {renamed_recon}")
+            log(f"Trade reconciliation report: {renamed_recon}")
             _get_local_runs().record(job.id, "trade", date_str, renamed_recon)
         if renamed_0096:
             log(f"Trade 0096 upload file: {renamed_0096}")
@@ -726,26 +855,37 @@ def _build_trade_fetch_sources() -> list[dict]:
     return fetch_sources
 
 
+EK_LAST_FETCH_AT = "last_fetch_at"
+
+
 def _run_fetch_emails(job: PollJob) -> RunPush:
     """Pull custodian/bank/trade emails via Microsoft Graph.
 
-    Supports single-date and multi-day range:
-      - Single: payload = {date: "2026-04-10"}
-      - Range:  payload = {date_from: "2026-04-08", date_to: "2026-04-10"}
+    Two modes:
 
-    Merges the static sources.json (custody/bank) with dynamic trade
-    sources built from broker_map.json (dealer files, broker CNs,
-    NSDL, exchange) — exactly as the Flask app did.
+    1. **Manual / multi-day** — operator dispatches with date_from + date_to.
+       Uses the full 72-hour-per-pivot stepping so every day in the range
+       is covered. No `since` logic — operator explicitly asked for a range.
+
+    2. **Scheduled / single-date** — scheduler creates a job with just {date}.
+       Uses the incremental `since` path: a single Graph query from
+       "30 minutes before last successful fetch" to "target + 2 days".
+       Fast, narrow, no redundant pages. Falls back to 72-hour lookback
+       on first-ever fetch (no `since` saved yet).
+
+    After a successful fetch, saves the current UTC timestamp as
+    last_fetch_at in agent settings so the next scheduled fetch can
+    use the incremental path.
     """
     log = _LogCollector()
     payload = job.payload or {}
 
-    # Support date range: if date_from + date_to are in payload, use range.
-    # Otherwise fall back to single-date via the 'date' field.
     date_from = str(payload.get("date_from", "")).strip()
     date_to = str(payload.get("date_to", "")).strip()
-    if date_from and date_to:
-        date_str = date_to  # use the end date as the canonical recon_date
+    is_range = bool(date_from and date_to)
+
+    if is_range:
+        date_str = date_to
     else:
         try:
             date_str = _job_date(job)
@@ -754,7 +894,6 @@ def _run_fetch_emails(job: PollJob) -> RunPush:
         date_from = date_str
         date_to = date_str
 
-    log(f"Starting email fetch for {date_from} → {date_to}")
     settings = load_settings()
 
     from .secrets import KEY_M365_CLIENT_SECRET, get_store
@@ -776,12 +915,22 @@ def _run_fetch_emails(job: PollJob) -> RunPush:
         )
         return _failed_push(job, "holdings", date_str, log, ValueError("m365_not_configured"))
 
+    # Determine since for incremental fetch (single-date / scheduled path)
+    since: str | None = None
+    if not is_range:
+        since = extras.get(EK_LAST_FETCH_AT)
+        if since:
+            log(f"Starting incremental email fetch for {date_str} (since {since[:16]})")
+        else:
+            log(f"Starting full email fetch for {date_str} (no prior fetch recorded)")
+    else:
+        log(f"Starting email fetch for range {date_from} to {date_to}")
+
     try:
         from core.email_ingestor import EmailIngestor
 
         fm = _file_manager(settings.workdir)
 
-        # Merge custody/bank sources with trade sources
         sources = _load_config_json("sources.json").get("sources", [])
         trade_sources = _build_trade_fetch_sources()
         all_sources = sources + trade_sources
@@ -807,6 +956,7 @@ def _run_fetch_emails(job: PollJob) -> RunPush:
             sources=all_sources,
             file_manager=fm,
             log_callback=log,
+            since=since,
         )
 
         ok_count = sum(1 for r in results if r.get("status") == "ok")
@@ -815,6 +965,20 @@ def _run_fetch_emails(job: PollJob) -> RunPush:
         log(
             f"Fetch complete — ok={ok_count} skipped={skip_count} errors={err_count}"
         )
+
+        # Persist last_fetch_at so the next scheduled fetch can use
+        # the incremental path. Only update on success (not on errors
+        # that might indicate a partial fetch).
+        if err_count == 0 or ok_count > 0:
+            now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            settings = load_settings()
+            new_extras = dict(settings.extras or {})
+            new_extras[EK_LAST_FETCH_AT] = now_iso
+            settings.extras = new_extras
+            from .config import save_settings
+            save_settings(settings)
+            log(f"Saved last_fetch_at = {now_iso}")
+
         status: RunStatus = "all_clear" if err_count == 0 else "breaks_found"
         return RunPush(
             job_id=job.id,
