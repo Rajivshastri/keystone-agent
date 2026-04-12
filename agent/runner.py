@@ -487,6 +487,34 @@ def _run_bank(job: PollJob) -> RunPush:
                 break
 
         bank_history: dict = {}  # Phase 2 will persist this under workdir
+
+        # Build the calendar-aware bank_dates list, mirroring Flask's
+        # logic at app.py:2265-2289. Bank statements arrive daily including
+        # weekends/holidays, so we need everything from the previous
+        # working day (for opening balances) through the recon day
+        # (for closing balances). If the operator supplied an explicit
+        # date_from / date_to range in the job payload, honour it instead.
+        from core.calendar import (
+            load_calendar,
+            bank_dates_range,
+            bank_dates_for_range,
+        )
+        cal = load_calendar()
+        payload_from = str(job.payload.get("date_from") or "").strip()
+        payload_to = str(job.payload.get("date_to") or "").strip()
+        if payload_from and payload_to:
+            bank_dates_list = bank_dates_for_range(payload_from, payload_to, cal)
+            log(
+                f"Bank dates (operator range): {bank_dates_list[0]} → "
+                f"{bank_dates_list[-1]} ({len(bank_dates_list)} days)"
+            )
+        else:
+            bank_dates_list = bank_dates_range(date_str, cal)
+            log(
+                f"Bank dates (calendar-expanded): {bank_dates_list[0]} → "
+                f"{bank_dates_list[-1]} ({len(bank_dates_list)} days)"
+            )
+
         try:
             summary, balance_summary, parse_log = run_bank_recon(
                 date_str,
@@ -495,7 +523,7 @@ def _run_bank(job: PollJob) -> RunPush:
                 password,
                 bank_history,
                 log,  # log_fn — our collector is callable
-                bank_dates=[date_str],
+                bank_dates=bank_dates_list,
             )
         except BankReconError as be:
             for line in getattr(be, "parse_log", []) or []:
