@@ -346,71 +346,94 @@ def _load_dispatch_config(config_dir: Path = None) -> dict:
 
 def _involved_mapins_by_custodian(date_str: str,
                                    config_dir: Path = None,
-                                   workdir: Path = None) -> dict:
-    """Determine which MAPINs traded today, grouped by custodian.
+                                   workdir: Path = None,
+                                   file_0096: str = None) -> dict:
+    """Determine which MAPINs actually traded today, grouped by custodian.
 
-    Returns: {custodian: [{mapin, strategy}, ...]}
+    Reads the 0096 XLS file directly to extract the MAPIN column
+    (column 18, 0-indexed = the mapin_id field). Only MAPINs that
+    appear in the 0096 output are returned — if only HDFC pools
+    traded, only HDFC shows up. No fallback to "all pools".
+
+    Returns: {custodian: [{'mapin': ..., 'strategy': ...}, ...]}
     """
     import json
+    from collections import defaultdict
+
     if config_dir is None:
         config_dir = Path(__file__).parent / "config"
     if workdir is None:
         workdir = Path(__file__).parent
+
     hub_path = config_dir / "pools_hub.json"
     if not hub_path.exists():
         return {}
     hub = json.loads(hub_path.read_text())
-    mapin_to_cust = {}
-    mapin_to_strategy = {}
+    mapin_to_cust: dict[str, str] = {}
+    mapin_to_strategy: dict[str, str] = {}
     for pool in hub.get("pools", []):
         mapin = (pool.get("mapin") or "").strip()
         cust  = (pool.get("custodian_bank") or "").strip().upper()
-        name  = (pool.get("strategy_name") or pool.get("pool_id") or mapin)
+        name  = (pool.get("display_name") or pool.get("pool_id") or mapin)
         if mapin and cust:
             mapin_to_cust[mapin] = cust
             mapin_to_strategy[mapin] = name
 
-    out_dir = workdir / "data" / date_str / "output"
-    results_files = sorted(out_dir.glob("results_*.json"), reverse=True) if out_dir.exists() else []
-    # Filter to trade-type results only
-    trade_results = []
-    import json as _json
-    for rf in results_files:
-        try:
-            d = _json.loads(rf.read_text())
-            if d.get("type") == "trade":
-                trade_results.append(d)
-                break  # newest first, take the latest
-        except Exception:
-            pass
+    # Find the 0096 file — either passed explicitly or search output dir
+    fpath = None
+    if file_0096:
+        fpath = Path(file_0096)
+        if not fpath.exists():
+            fpath = None
+    if fpath is None:
+        out_dir = workdir / "data" / date_str / "output"
+        candidates = sorted(out_dir.glob("*0096*.xls"), reverse=True) if out_dir.exists() else []
+        if candidates:
+            fpath = candidates[0]
 
-    from collections import defaultdict
-    result: dict = defaultdict(list)  # custodian → [{'mapin': ..., 'strategy': ...}]
+    if fpath is None or not fpath.exists():
+        log.warning("No 0096 file found — cannot determine involved MAPINs")
+        return {}
 
-    if not trade_results:
-        # Fallback: return all configured mapins grouped by custodian
-        for mapin, cust in mapin_to_cust.items():
-            result[cust].append({'mapin': mapin, 'strategy': mapin_to_strategy.get(mapin, mapin)})
-        return dict(result)
-
+    # Read MAPIN column from the 0096 XLS
+    mapins_in_file: set[str] = set()
     try:
-        summary = trade_results[0].get("summary", {})
-        rows_0096 = summary.get("output_0096", [])
-        mapins = set()
-        for row in rows_0096:
-            m = (row.get("mapin_id") or "").strip()
-            if m:
-                mapins.add(m)
-        for m in mapins:
-            c = mapin_to_cust.get(m)
-            if c:
-                result[c].append({'mapin': m, 'strategy': mapin_to_strategy.get(m, m)})
-        return dict(result) if result else {c: [{'mapin': m, 'strategy': mapin_to_strategy.get(m, m)}]
-                                             for m, c in mapin_to_cust.items()}
-    except Exception:
-        for mapin, cust in mapin_to_cust.items():
-            result[cust].append({'mapin': mapin, 'strategy': mapin_to_strategy.get(mapin, mapin)})
-        return dict(result)
+        ext = str(fpath).lower().rsplit(".", 1)[-1]
+        if ext == "xls":
+            import xlrd
+            wb = xlrd.open_workbook(str(fpath))
+            ws = wb.sheet_by_index(0)
+            # MAPIN is column index 17 (0-based) in the 0096 format
+            for rx in range(1, ws.nrows):
+                val = str(ws.cell_value(rx, 17) if ws.ncols > 17 else "").strip()
+                if val:
+                    mapins_in_file.add(val)
+            wb.release_resources()
+        else:
+            import openpyxl
+            wb = openpyxl.load_workbook(str(fpath), read_only=True, data_only=True)
+            ws_sheet = wb[wb.sheetnames[0]]
+            for row in ws_sheet.iter_rows(min_row=2, values_only=True):
+                if row and len(row) > 17:
+                    val = str(row[17] or "").strip()
+                    if val:
+                        mapins_in_file.add(val)
+            wb.close()
+    except Exception as e:
+        log.warning(f"Failed to read MAPINs from 0096 file: {e}")
+        return {}
+
+    if not mapins_in_file:
+        log.info("0096 file has no MAPIN rows — no dispatch needed")
+        return {}
+
+    result: dict = defaultdict(list)
+    for m in mapins_in_file:
+        c = mapin_to_cust.get(m)
+        if c:
+            result[c].append({"mapin": m, "strategy": mapin_to_strategy.get(m, m)})
+
+    return dict(result)
 
 
 def dispatch_trades(file_0096: str, date_str: str,
@@ -450,8 +473,10 @@ def dispatch_trades(file_0096: str, date_str: str,
     except ValueError:
         ws_date = date_str
 
-    # Step 2: Determine involved MAPINs grouped by custodian
-    by_custodian = _involved_mapins_by_custodian(date_str, config_dir=config_dir, workdir=workdir)
+    # Step 2: Determine involved MAPINs by reading the 0096 file directly
+    by_custodian = _involved_mapins_by_custodian(
+        date_str, config_dir=config_dir, workdir=workdir, file_0096=file_0096,
+    )
     config = _load_dispatch_config(config_dir=config_dir)
     custodian_cfg = config.get("custodians", {})
     common_cfg    = config.get("common", {})
