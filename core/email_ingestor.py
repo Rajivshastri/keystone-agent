@@ -734,7 +734,7 @@ class EmailIngestor:
             return {'ok': False, 'message': 'No recipients specified.'}
 
         from datetime import datetime as _dt
-        display_date = _dt.strptime(date_str, '%Y-%m-%d').strftime('%d %B %Y')
+        display_date = _dt.strptime(date_str, '%Y-%m-%d').strftime('%d-%m-%Y')
 
         cats = [
             ('unexplained',       '&#x2717; Unexplained Breaks',     '#B03030', '#FDF1F1'),
@@ -938,7 +938,7 @@ class EmailIngestor:
             return {'ok': False, 'message': 'No recipients specified.'}
 
         from datetime import datetime as _dt
-        display_date = _dt.strptime(date_str, '%Y-%m-%d').strftime('%d %B %Y')
+        display_date = _dt.strptime(date_str, '%Y-%m-%d').strftime('%d-%m-%Y')
 
         n_clean   = summary_dict.get('clean',       0)
         n_breaks  = summary_dict.get('breaks',      0)
@@ -1137,14 +1137,14 @@ class EmailIngestor:
 
         from datetime import datetime as _dt
         try:
-            display_date = _dt.strptime(date_str, '%Y-%m-%d').strftime('%d %B %Y')
+            display_date = _dt.strptime(date_str, '%Y-%m-%d').strftime('%d-%m-%Y')
         except ValueError:
             display_date = date_str
 
         try:
             sent_dt    = _dt.fromisoformat(initial_sent_at)
             hours_ago  = max(1, int((_dt.utcnow() - sent_dt).total_seconds() // 3600))
-            sent_label = sent_dt.strftime('%d %b %Y %H:%M UTC')
+            sent_label = sent_dt.strftime('%d-%m-%Y %H:%M UTC')
         except Exception:
             hours_ago  = reminder_count + 1
             sent_label = initial_sent_at or 'earlier today'
@@ -1232,7 +1232,7 @@ class EmailIngestor:
             return {'ok': False, 'message': 'No recipients specified.'}
 
         from datetime import datetime as _dt
-        display_date = _dt.strptime(date_str, '%Y-%m-%d').strftime('%d %B %Y')
+        display_date = _dt.strptime(date_str, '%Y-%m-%d').strftime('%d-%m-%Y')
         c1 = summary_dict.get('c1_breaks', 0)
         c2 = summary_dict.get('c2_breaks', 0)
         c3 = summary_dict.get('c3_breaks', 0)
