@@ -668,17 +668,22 @@ def _run_trade(job: PollJob) -> RunPush:
                 if mp and cb:
                     mapin_cust[mp] = cb
                     mapin_name[mp] = nm
+            # Also build alias → canonical MAPIN resolution so dispatch
+            # uses the canonical code (GWPJ0004) not the broker's back-
+            # office UCC (24725) in email subjects and file names.
+            alias_to_canonical: dict[str, str] = {}
             pool_map_entries = pool_map_raw.get("pools", [])
             for entry in pool_map_entries:
                 mp = (entry.get("mapin") or "").strip()
                 canon = (entry.get("canonical_mapin") or "").strip()
                 cust_long = (entry.get("custodian") or "").strip().upper()
+                if mp and canon:
+                    alias_to_canonical[mp] = canon
                 # Map the alias to the canonical's custodian
                 if mp and canon and canon in mapin_cust:
                     mapin_cust[mp] = mapin_cust[canon]
                     mapin_name[mp] = mapin_name.get(canon, mp)
                 elif mp and cust_long:
-                    # Derive short custodian from long name
                     for short in ("ICICI", "HDFC", "KOTAK", "AXIS"):
                         if short in cust_long:
                             mapin_cust[mp] = short
@@ -689,8 +694,13 @@ def _run_trade(job: PollJob) -> RunPush:
             by_custodian: dict[str, list[dict]] = defaultdict(list)
             for m in involved_mapins:
                 c = mapin_cust.get(m)
+                # Resolve to canonical MAPIN for display in emails/filenames
+                resolved = alias_to_canonical.get(m, m)
                 if c:
-                    by_custodian[c].append({"mapin": m, "strategy": mapin_name.get(m, m)})
+                    by_custodian[c].append({
+                        "mapin": resolved,
+                        "strategy": mapin_name.get(m, mapin_name.get(resolved, resolved)),
+                    })
                 else:
                     log(f"Dispatch: MAPIN {m} from 0096 not found in pools config", level="warning")
 
