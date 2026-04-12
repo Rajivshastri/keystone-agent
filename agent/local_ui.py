@@ -711,11 +711,11 @@ def _template_preview_page(slug: str, diff: Any, token: str) -> str:
         )
 
     def _row_summary(r: dict[str, Any]) -> str:
-        # Show the row's key + first couple of interesting fields
-        return (
-            f'<code>{r.get("pool_id", r.get("key", "?"))}</code> '
-            f'{r.get("display_name", "")}'
-        )
+        # Show the row's key columns + display_name if present
+        key_parts = [str(r.get(k, "")) for k in (spec.key if spec else ("pool_id",))]
+        label = " / ".join(p for p in key_parts if p) or "?"
+        name = r.get("display_name", "")
+        return f'<code>{label}</code> {name}'
 
     added_html = "".join(
         f'<li style="color:#1a7a4a">{_row_summary(r)}</li>' for r in diff.added

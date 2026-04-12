@@ -684,16 +684,8 @@ class TradeReconEngine:
             side = dt.side.capitalize()
 
             # Zero-fill: order was placed but not executed — no CN expected.
-            # Record as UNFILLED (not a break) and move on.
+            # Skip entirely — nothing to reconcile against a contract note.
             if dt.fill_qty == 0:
-                results.append(Check2Result(
-                    mapin=dt.mapin, dealer_account=dt.account,
-                    broker_code=dt.brkr_code, isin=dt.isin,
-                    security_name=dt.name, side=side,
-                    dealer_fill_qty=0.0, dealer_avg_px=0.0,
-                    cn_qty=0.0, cn_wap=0.0, cn_no='',
-                    qty_match=True, price_match=True, status='UNFILLED',
-                ))
                 continue
 
             matching_cns = _find_cns(dt)
@@ -962,6 +954,11 @@ class TradeReconEngine:
         """
         if isin_to_name is None:
             isin_to_name = {}
+
+        # If no NSDL records are available, skip C3 entirely rather than
+        # marking every CN trade as NSDL_MISSING.
+        if not nsdl_records:
+            return []
 
         # UNKNOWN dedup already applied before C2; re-run to catch any remaining
         contract_notes = self._dedup_unknown_cns(list(contract_notes))
@@ -1773,17 +1770,21 @@ def write_trade_recon_report(summary: TradeReconSummary, out_path: str):
     ])
 
     # ── Check 3 sheet ──────────────────────────────────────────────────────
-    ws3 = wb.create_sheet('C3 CN vs NSDL')
-    _hdr(ws3, ['CN No','ISIN','Security','Broker SEBI','Broker','UCC',
-               'Qty','Rate','In PDF','In NSDL','NSDL Status','Status'],
-         [18,14,30,20,35,14,10,12,8,8,20,14])
-    _write_rows(ws3, [
-        ([r.cn_no, r.isin, r.security_name, r.broker_sebi, r.broker_name,
-          r.ucc, r.qty, r.net_rate,
-          'Y' if r.in_broker_pdf else 'N', 'Y' if r.in_nsdl else 'N',
-          r.nsdl_status, r.status], r.status)
-        for r in summary.check3_results
-    ])
+    if summary.check3_results:
+        ws3 = wb.create_sheet('C3 CN vs NSDL')
+        _hdr(ws3, ['CN No','ISIN','Security','Broker SEBI','Broker','UCC',
+                   'Qty','Rate','In PDF','In NSDL','NSDL Status','Status'],
+             [18,14,30,20,35,14,10,12,8,8,20,14])
+        _write_rows(ws3, [
+            ([r.cn_no, r.isin, r.security_name, r.broker_sebi, r.broker_name,
+              r.ucc, r.qty, r.net_rate,
+              'Y' if r.in_broker_pdf else 'N', 'Y' if r.in_nsdl else 'N',
+              r.nsdl_status, r.status], r.status)
+            for r in summary.check3_results
+        ])
+    else:
+        ws3 = wb.create_sheet('C3 Skipped')
+        ws3.append(['NSDL file not available for this date — C3 check skipped.'])
 
     # ── Check 5 sheet (optional) ───────────────────────────────────────────
     if summary.check5_results:

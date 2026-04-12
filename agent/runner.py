@@ -510,18 +510,97 @@ def _run_trade(job: PollJob) -> RunPush:
             log(f"Trade 0096 upload file: {renamed_0096}")
         att = attachment_metadata(renamed_recon)
 
+        # Auto-dispatch: when trade recon is all_clear and a 0096 file
+        # exists, upload it to WS and email custody interface files to
+        # custodians. This is the "straight-through processing" path —
+        # if any break exists, dispatch is skipped and the operator must
+        # resolve breaks first.
+        dispatch_counts: dict[str, int | str] = {}
+        if status == "all_clear" and (renamed_0096 or xlsx_0096):
+            dispatch_counts = _auto_dispatch_trades(
+                file_0096=renamed_0096 or xlsx_0096 or "",
+                date_str=date_str,
+                workdir=settings.workdir,
+                log=log,
+            )
+
         return RunPush(
             job_id=job.id,
             type="trade",
             recon_date=date_str,
             status=status,
-            counts=counts,
+            counts={**counts, **dispatch_counts},
             attachments_meta=att,
             reminder_count=0,
             log_lines=log.as_log_lines(),
         )
     except Exception as e:  # noqa: BLE001
         return _failed_push(job, "trade", date_str, log, e)
+
+
+def _auto_dispatch_trades(
+    file_0096: str, date_str: str, workdir: str, log: _LogCollector
+) -> dict[str, int | str]:
+    """Upload 0096 to WS and email custody interface files to custodians.
+
+    Called automatically after a trade recon that finishes all_clear.
+    Credentials come from DPAPI (ws_portal_password) and env vars
+    (FINCRM_USER / FINCRM_PASS) — same as _run_ws_download.
+    """
+    from .secrets import KEY_WS_PORTAL_PASSWORD, get_store
+    from .setup import EK_WS_USERNAME
+
+    settings = load_settings()
+    extras = settings.extras or {}
+    ws_user = extras.get(EK_WS_USERNAME, "").strip()
+    ws_pass = (get_store().get(KEY_WS_PORTAL_PASSWORD) or "").strip()
+    if not ws_user or not ws_pass:
+        log("Dispatch skipped — WS credentials not configured", level="warning")
+        return {"dispatch": "skipped_no_creds"}
+
+    prev = {
+        "FINCRM_USER": os.environ.get("FINCRM_USER"),
+        "FINCRM_PASS": os.environ.get("FINCRM_PASS"),
+    }
+    os.environ["FINCRM_USER"] = ws_user
+    os.environ["FINCRM_PASS"] = ws_pass
+
+    try:
+        from ws_uploader import dispatch_trades
+
+        log(f"Auto-dispatch: uploading 0096 + sending custody emails for {date_str}")
+
+        def progress(stage: str, detail: str) -> None:
+            log(f"Dispatch {stage}: {detail}")
+
+        result = dispatch_trades(
+            file_0096=file_0096,
+            date_str=date_str,
+            progress_cb=progress,
+        )
+
+        if result.ok:
+            n_cust = len(result.custodian_results)
+            n_ok = sum(1 for c in result.custodian_results if c.get("email_ok"))
+            log(f"Dispatch complete — upload ok, {n_ok}/{n_cust} custodian emails sent")
+            return {
+                "dispatch": "ok",
+                "dispatch_custodians": n_cust,
+                "dispatch_emails_ok": n_ok,
+            }
+        else:
+            msg = getattr(result.upload_result, "detail", "unknown") if result.upload_result else "unknown"
+            log(f"Dispatch failed — upload: {msg}", level="warning")
+            return {"dispatch": f"failed: {msg}"}
+    except Exception as e:  # noqa: BLE001
+        log(f"Dispatch error: {e}", level="error")
+        return {"dispatch": f"error: {e}"}
+    finally:
+        for k, v in prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 # ── Non-recon jobs (lightweight) ───────────────────────────────────── #
