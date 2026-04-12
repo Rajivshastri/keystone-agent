@@ -333,28 +333,30 @@ class DispatchResult:
         }
 
 
-def _load_dispatch_config() -> dict:
-    """Load dispatch config — prefer data/ (survives deploys), fall back to config/."""
+def _load_dispatch_config(config_dir: Path = None) -> dict:
+    """Load dispatch config from the given config directory."""
     import json
-    data_path = Path(__file__).parent / "data" / "custodian_dispatch.json"
-    if data_path.exists():
-        try:
-            return json.loads(data_path.read_text())
-        except Exception:
-            pass
-    config_path = Path(__file__).parent / "config" / "custodian_dispatch.json"
+    if config_dir is None:
+        config_dir = Path(__file__).parent / "config"
+    config_path = config_dir / "custodian_dispatch.json"
     if config_path.exists():
         return json.loads(config_path.read_text())
     return {"custodians": {}}
 
 
-def _involved_mapins_by_custodian(date_str: str) -> dict:
+def _involved_mapins_by_custodian(date_str: str,
+                                   config_dir: Path = None,
+                                   workdir: Path = None) -> dict:
     """Determine which MAPINs traded today, grouped by custodian.
 
-    Returns: {custodian: [mapin, ...]} e.g. {'AXIS': ['GOLDETEPMS', 'GOLDFALPMS'], 'KOTAK': ['204496800']}
+    Returns: {custodian: [{mapin, strategy}, ...]}
     """
     import json
-    hub_path = Path(__file__).parent / "config" / "pools_hub.json"
+    if config_dir is None:
+        config_dir = Path(__file__).parent / "config"
+    if workdir is None:
+        workdir = Path(__file__).parent
+    hub_path = config_dir / "pools_hub.json"
     if not hub_path.exists():
         return {}
     hub = json.loads(hub_path.read_text())
@@ -368,7 +370,7 @@ def _involved_mapins_by_custodian(date_str: str) -> dict:
             mapin_to_cust[mapin] = cust
             mapin_to_strategy[mapin] = name
 
-    out_dir = Path(__file__).parent / "data" / date_str / "output"
+    out_dir = workdir / "data" / date_str / "output"
     results_files = sorted(out_dir.glob("results_*.json"), reverse=True) if out_dir.exists() else []
     # Filter to trade-type results only
     trade_results = []
@@ -412,16 +414,29 @@ def _involved_mapins_by_custodian(date_str: str) -> dict:
 
 
 def dispatch_trades(file_0096: str, date_str: str,
-                    progress_cb=None) -> DispatchResult:
+                    progress_cb=None,
+                    config_dir: Path = None,
+                    workdir: Path = None,
+                    azure_config: dict = None) -> DispatchResult:
     """
     Full post-trade-recon automation:
       1. Upload 0096 file to WS
       2. Download Custody Interface file per involved custodian
       3. Email each file to the custodian
 
+    config_dir:    resolved config directory (agent.paths.config_dir())
+    workdir:       resolved workdir (agent settings.workdir)
+    azure_config:  M365 Graph credentials dict with tenant_id, client_id,
+                   client_secret, mailbox — passed through to the email
+                   sender so it doesn't need to read azure.json.
     progress_cb(stage, detail): optional callback.
     """
     from datetime import datetime
+
+    if config_dir is None:
+        config_dir = Path(__file__).parent / "config"
+    if workdir is None:
+        workdir = Path(__file__).parent
 
     # Step 1: Upload 0096
     upload_result = upload_0096(file_0096, progress_cb=progress_cb)
@@ -436,8 +451,8 @@ def dispatch_trades(file_0096: str, date_str: str,
         ws_date = date_str
 
     # Step 2: Determine involved MAPINs grouped by custodian
-    by_custodian = _involved_mapins_by_custodian(date_str)
-    config = _load_dispatch_config()
+    by_custodian = _involved_mapins_by_custodian(date_str, config_dir=config_dir, workdir=workdir)
+    config = _load_dispatch_config(config_dir=config_dir)
     custodian_cfg = config.get("custodians", {})
     common_cfg    = config.get("common", {})
 
@@ -450,7 +465,7 @@ def dispatch_trades(file_0096: str, date_str: str,
 
     # Step 3: Login to WS for custody interface downloads
     from ws_downloader import _login as _dl_login, _base_url as _dl_base
-    auth_cache = Path(__file__).parent / "config" / "ws_auth.json"
+    auth_cache = config_dir / "ws_auth.json"
     dl_session = _requests.Session()
     dl_session.headers.update({
         "User-Agent": "Mozilla/5.0 WS-Dispatch/1.0",
@@ -465,7 +480,7 @@ def dispatch_trades(file_0096: str, date_str: str,
                                for c in by_custodian])
 
     base    = _dl_base()
-    out_dir = Path(__file__).parent / "data" / date_str / "output"
+    out_dir = workdir / "data" / date_str / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
     custodian_results = []
 
@@ -541,7 +556,8 @@ def dispatch_trades(file_0096: str, date_str: str,
         try:
             attachment_paths = [fp for _, _, fp in downloaded_files]
             _send_custodian_email(email_to, subject, attachment_paths, cust,
-                                  date_str, body_html=body, send_from=send_from)
+                                  date_str, body_html=body, send_from=send_from,
+                                  azure_config=azure_config)
             custodian_results.append({
                 "custodian": cust, "files": file_names, "email_ok": True, "error": None,
             })
@@ -562,27 +578,30 @@ def dispatch_trades(file_0096: str, date_str: str,
 def _send_custodian_email(recipients: list, subject: str,
                           attachment_paths, custodian: str,
                           date_str: str, body_html: str = '',
-                          send_from: str = ''):
+                          send_from: str = '',
+                          azure_config: dict = None):
     """Send custody interface file(s) to a custodian via M365 Graph API.
 
     attachment_paths: single Path or list of Paths
     send_from: mailbox to send from (Graph API /users/{send_from}/sendMail).
-               Defaults to the configured AZURE_MAILBOX if empty.
+               Defaults to the configured mailbox.
+    azure_config: dict with tenant_id, client_id, client_secret, mailbox.
+                  When provided, used directly. When None, falls back to
+                  env vars (legacy Flask path).
     """
-    import sys, os
-    sys.path.insert(0, str(Path(__file__).parent))
+    import os
 
     from core.email_ingestor import EmailIngestor
-    import json
 
-    az_path = Path(__file__).parent / "config" / "azure.json"
-    az_file = json.loads(az_path.read_text()) if az_path.exists() else {}
-    cfg = {
-        "tenant_id":     az_file.get("tenant_id")     or os.environ.get("AZURE_TENANT_ID", ""),
-        "client_id":     az_file.get("client_id")     or os.environ.get("AZURE_CLIENT_ID", ""),
-        "client_secret": az_file.get("client_secret") or os.environ.get("AZURE_CLIENT_SECRET", ""),
-        "mailbox":       az_file.get("mailbox")        or os.environ.get("AZURE_MAILBOX", ""),
-    }
+    if azure_config and all(azure_config.values()):
+        cfg = azure_config
+    else:
+        cfg = {
+            "tenant_id":     os.environ.get("AZURE_TENANT_ID", ""),
+            "client_id":     os.environ.get("AZURE_CLIENT_ID", ""),
+            "client_secret": os.environ.get("AZURE_CLIENT_SECRET", ""),
+            "mailbox":       os.environ.get("AZURE_MAILBOX", ""),
+        }
     ingestor = EmailIngestor(cfg)
     if not ingestor.is_configured():
         raise RuntimeError("Azure email credentials not configured")

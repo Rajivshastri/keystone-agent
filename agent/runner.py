@@ -567,25 +567,17 @@ def _auto_dispatch_trades(
 
     try:
         from ws_uploader import dispatch_trades
-
-        # ws_uploader reads M365 email credentials from config/azure.json,
-        # but the agent stores them in DPAPI. Bridge the gap by writing a
-        # temporary azure.json into the config dir so the uploader's
-        # _send_custodian_email finds them.
         from .secrets import KEY_M365_CLIENT_SECRET
         from .setup import EK_M365_CLIENT_ID, EK_M365_MAILBOX, EK_M365_TENANT_ID
         from .paths import config_dir
-        import json as _json
 
         m365_extras = settings.extras or {}
-        az_cfg = {
+        azure_config = {
             "tenant_id": m365_extras.get(EK_M365_TENANT_ID, ""),
             "client_id": m365_extras.get(EK_M365_CLIENT_ID, ""),
             "client_secret": get_store().get(KEY_M365_CLIENT_SECRET) or "",
             "mailbox": m365_extras.get(EK_M365_MAILBOX, ""),
         }
-        az_json_path = config_dir() / "azure.json"
-        az_json_path.write_text(_json.dumps(az_cfg, indent=2), encoding="utf-8")
 
         log(f"Auto-dispatch: uploading 0096 + sending custody emails for {date_str}")
 
@@ -596,6 +588,9 @@ def _auto_dispatch_trades(
             file_0096=file_0096,
             date_str=date_str,
             progress_cb=progress,
+            config_dir=config_dir(),
+            workdir=Path(settings.workdir).resolve(),
+            azure_config=azure_config,
         )
 
         # Treat duplicate upload as success — the 0096 was already in WS
