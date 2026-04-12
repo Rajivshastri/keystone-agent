@@ -486,7 +486,21 @@ def _run_bank(job: PollJob) -> RunPush:
                 password = s["zip_password"]
                 break
 
-        bank_history: dict = {}  # Phase 2 will persist this under workdir
+        # Tier-2 fallback opening balances. The bank engine reads prev
+        # working day raw files via the calendar-expanded bank_dates list
+        # below (Tier 1, primary). This dict is used only when those files
+        # are missing — fresh installs, long holiday windows, or aged-out
+        # workdirs. Mirrors Flask's _load_bank_balance_history fallback.
+        from core.bank_balance_history import (
+            load_bank_balance_history as _load_bank_history,
+            append_bank_balance_history as _append_bank_history,
+        )
+        bank_history: dict = _load_bank_history(date_str, settings.workdir)
+        if bank_history.get("cust"):
+            log(
+                f"Bank balance history fallback loaded: "
+                f"{len(bank_history['cust'])} account(s)"
+            )
 
         # Build the calendar-aware bank_dates list, mirroring Flask's
         # logic at app.py:2265-2289. Bank statements arrive daily including
@@ -538,6 +552,14 @@ def _run_bank(job: PollJob) -> RunPush:
             f"Bank reconciliation complete — {summary_dict.get('total_pools', 0)} pools, "
             f"{summary_dict.get('clean', 0)} clean, {summary_dict.get('breaks', 0)} breaks"
         )
+
+        # Persist closing balances to the cumulative history file. Best
+        # effort — never blocks the run if the write fails. Mirrors
+        # Flask app.py:2349.
+        try:
+            _append_bank_history(date_str, summary, settings.workdir)
+        except Exception as hist_err:  # noqa: BLE001
+            log(f"Bank balance history append failed: {hist_err}", level="warning")
 
         # Write the Keystone-tagged Excel report. The exporter is new
         # in Phase 2 — the legacy in-house app never had a working
@@ -1004,6 +1026,16 @@ def _run_fetch_emails(job: PollJob) -> RunPush:
         log(
             f"Fetch complete — ok={ok_count} skipped={skip_count} errors={err_count}"
         )
+
+        # Archive pass: catch-all email archiver mirroring Flask
+        # app.py:585-590. Best-effort — never blocks the run if it fails.
+        try:
+            arch_dir = fm.archive_base_dir()
+            ingestor.archive_for_date(
+                date_to, all_sources, arch_dir, log_callback=log
+            )
+        except Exception as arch_err:  # noqa: BLE001
+            log(f"Archive pass failed: {arch_err}", level="warning")
 
         # Persist last_fetch_at so the next scheduled fetch can use
         # the incremental path. Only update on success (not on errors
