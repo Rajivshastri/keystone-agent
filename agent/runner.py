@@ -517,11 +517,60 @@ def _run_trade(job: PollJob) -> RunPush:
         # resolve breaks first.
         dispatch_counts: dict[str, int | str] = {}
         if status == "all_clear" and (renamed_0096 or xlsx_0096):
+            # Extract which MAPINs are in the 0096 output and map each
+            # to its custodian using pools_hub — this is authoritative
+            # because the trade recon engine already resolved UCC aliases
+            # to canonical MAPINs when building the 0096 rows.
+            raw_summary = getattr(result, "summary", None)
+            output_rows = getattr(raw_summary, "output_0096", []) if raw_summary else []
+            involved_mapins = set()
+            for row in output_rows:
+                m = getattr(row, "mapin_id", "").strip()
+                if m:
+                    involved_mapins.add(m)
+
+            # Build mapin → custodian from pools_hub + pool_map aliases
+            mapin_cust: dict[str, str] = {}
+            mapin_name: dict[str, str] = {}
+            for pool in getattr(hub, "_pools", []) or []:
+                mp = (pool.get("mapin") or "").strip()
+                cb = (pool.get("custodian_bank") or "").strip().upper()
+                nm = pool.get("display_name") or pool.get("pool_id") or mp
+                if mp and cb:
+                    mapin_cust[mp] = cb
+                    mapin_name[mp] = nm
+            pool_map_entries = pool_map_raw.get("pools", [])
+            for entry in pool_map_entries:
+                mp = (entry.get("mapin") or "").strip()
+                canon = (entry.get("canonical_mapin") or "").strip()
+                cust_long = (entry.get("custodian") or "").strip().upper()
+                # Map the alias to the canonical's custodian
+                if mp and canon and canon in mapin_cust:
+                    mapin_cust[mp] = mapin_cust[canon]
+                    mapin_name[mp] = mapin_name.get(canon, mp)
+                elif mp and cust_long:
+                    # Derive short custodian from long name
+                    for short in ("ICICI", "HDFC", "KOTAK", "AXIS"):
+                        if short in cust_long:
+                            mapin_cust[mp] = short
+                            mapin_name[mp] = entry.get("pool_name", mp)
+                            break
+
+            from collections import defaultdict
+            by_custodian: dict[str, list[dict]] = defaultdict(list)
+            for m in involved_mapins:
+                c = mapin_cust.get(m)
+                if c:
+                    by_custodian[c].append({"mapin": m, "strategy": mapin_name.get(m, m)})
+                else:
+                    log(f"Dispatch: MAPIN {m} from 0096 not found in pools config", level="warning")
+
             dispatch_counts = _auto_dispatch_trades(
                 file_0096=renamed_0096 or xlsx_0096 or "",
                 date_str=date_str,
                 workdir=settings.workdir,
                 log=log,
+                by_custodian=dict(by_custodian),
             )
 
         return RunPush(
@@ -539,7 +588,8 @@ def _run_trade(job: PollJob) -> RunPush:
 
 
 def _auto_dispatch_trades(
-    file_0096: str, date_str: str, workdir: str, log: _LogCollector
+    file_0096: str, date_str: str, workdir: str, log: _LogCollector,
+    by_custodian: dict[str, list[dict]] | None = None,
 ) -> dict[str, int | str]:
     """Upload 0096 to WS and email custody interface files to custodians.
 
@@ -591,6 +641,7 @@ def _auto_dispatch_trades(
             config_dir=config_dir(),
             workdir=Path(settings.workdir).resolve(),
             azure_config=azure_config,
+            by_custodian=by_custodian,
         )
 
         # Treat duplicate upload as success — the 0096 was already in WS

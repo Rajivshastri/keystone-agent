@@ -440,7 +440,8 @@ def dispatch_trades(file_0096: str, date_str: str,
                     progress_cb=None,
                     config_dir: Path = None,
                     workdir: Path = None,
-                    azure_config: dict = None) -> DispatchResult:
+                    azure_config: dict = None,
+                    by_custodian: dict = None) -> DispatchResult:
     """
     Full post-trade-recon automation:
       1. Upload 0096 file to WS
@@ -473,10 +474,12 @@ def dispatch_trades(file_0096: str, date_str: str,
     except ValueError:
         ws_date = date_str
 
-    # Step 2: Determine involved MAPINs by reading the 0096 file directly
-    by_custodian = _involved_mapins_by_custodian(
-        date_str, config_dir=config_dir, workdir=workdir, file_0096=file_0096,
-    )
+    # Step 2: Determine involved MAPINs — caller can pass pre-resolved
+    # mapping, otherwise fall back to reading the 0096 file.
+    if by_custodian is None:
+        by_custodian = _involved_mapins_by_custodian(
+            date_str, config_dir=config_dir, workdir=workdir, file_0096=file_0096,
+        )
     config = _load_dispatch_config(config_dir=config_dir)
     custodian_cfg = config.get("custodians", {})
     common_cfg    = config.get("common", {})
