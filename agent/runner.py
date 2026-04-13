@@ -667,8 +667,94 @@ def _cmd_bank_finalize(payload: dict[str, Any]) -> CommandResult:
 
 
 def _cmd_send_final_email(payload: dict[str, Any]) -> CommandResult:
-    # P3c — filled in next
-    return CommandResult.failure("send_final_email handler not yet implemented")
+    """Send the post-explanation follow-up email for a run.
+
+    Dispatched by the control plane's ``submitPerBreakExplanations``
+    after an operator submits per-break explanations (or accept-all)
+    on the explain page. The payload carries everything needed to
+    compose the email without any further server round-trips:
+
+        run_id:           control plane run id (informational)
+        job_id:           agent-local job id (to find the Excel path)
+        recon_type:       "holdings" | "bank" | "trade"
+        recon_date:       YYYY-MM-DD
+        explanations:     [{break_id, explanation, explained_amount}]
+        accepted_all:     bool
+        explainer_email:  operator who submitted
+
+    Reads the recipient list from ``settings.extras.recon_recipients``
+    (same convention as every other recon email), attaches the
+    existing Excel report from disk, and fires via
+    EmailIngestor.send_explanation_followup.
+
+    On success, also marks the reminder queue entry as final so
+    hourly reminders stop for this (recon_type, date) pair.
+    """
+    job_id = str(payload.get("job_id") or "").strip()
+    recon_type = str(payload.get("recon_type") or "").strip()
+    date_str = str(payload.get("recon_date") or "").strip()
+    explanations = payload.get("explanations") or []
+    accepted_all = bool(payload.get("accepted_all") or False)
+    explainer_email = str(payload.get("explainer_email") or "")
+
+    if not job_id or not recon_type or not date_str:
+        return CommandResult.failure("missing job_id / recon_type / recon_date in payload")
+    if recon_type == "trade":
+        return CommandResult.failure(
+            "trade runs do not use the explain workflow — final email skipped",
+        )
+
+    settings = load_settings()
+    recipients = _recon_recipients(settings)
+    if not recipients:
+        return CommandResult.failure(
+            "extras.recon_recipients is empty — no one to send to",
+        )
+    azure_cfg = _azure_config_for_ingestor(settings)
+    if azure_cfg is None:
+        return CommandResult.failure("M365 credentials not configured")
+
+    # Find the Excel attachment via local_runs.
+    local = _get_local_runs().get(job_id)
+    attachment_path = local.output_path if local else None
+
+    from core.email_ingestor import EmailIngestor
+
+    ingestor = EmailIngestor(azure_cfg)
+    result = ingestor.send_explanation_followup(
+        recon_type=recon_type,
+        date_str=date_str,
+        recipients=recipients,
+        explanations=explanations if isinstance(explanations, list) else [],
+        explainer_email=explainer_email,
+        accepted_all=accepted_all,
+        attachment_path=attachment_path,
+    )
+    if not result.get("ok"):
+        return CommandResult.failure(
+            f"send failed: {result.get('message', 'unknown error')}",
+        )
+
+    # Clear the reminder queue entry so hourly reminders stop.
+    try:
+        from core.recon_reminders import ReconReminderStore
+        reminder_path = Path(settings.workdir) / "data" / "recon_reminders.json"
+        store = ReconReminderStore(reminder_path)
+        store.mark_final_sent(recon_type, date_str)
+    except Exception as rem_err:  # noqa: BLE001
+        # Non-fatal — the email was sent, just note that reminder
+        # clearing failed.
+        return CommandResult.success({
+            "sent_to": recipients,
+            "attachment_used": bool(attachment_path),
+            "reminder_clear_warning": str(rem_err),
+        })
+
+    return CommandResult.success({
+        "sent_to": recipients,
+        "attachment_used": bool(attachment_path),
+        "reminder_cleared": True,
+    })
 
 
 def _cmd_set_standing_rule(payload: dict[str, Any]) -> CommandResult:

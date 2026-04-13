@@ -1535,3 +1535,173 @@ class EmailIngestor:
             log("Archive: no matching emails found")
 
         return summary
+
+    def send_explanation_followup(self,
+                                  recon_type: str,
+                                  date_str: str,
+                                  recipients: list,
+                                  explanations: list,
+                                  explainer_email: str = '',
+                                  accepted_all: bool = False,
+                                  attachment_path: str = None) -> dict:
+        """Send the post-explanation follow-up email.
+
+        Called by the _cmd_send_final_email agent handler after an
+        operator submits per-break explanations (or accept-all) via
+        the control plane's explain page. Builds a minimal HTML body
+        listing every explanation + the explainer's email + an
+        accept-all indicator, and attaches the existing Excel report
+        (if still on disk).
+
+        Separate from send_recon_summary / send_bank_recon_summary
+        because those methods expect the full in-memory results /
+        summary dict at recon time; by the time we're following up,
+        the process has long exited and all we have is the sidecar.
+        This method only needs the explanations payload (which came
+        from the control plane) and the on-disk Excel path.
+
+        Args:
+            recon_type:       "bank" / "holdings" (trade doesn't use)
+            date_str:         YYYY-MM-DD
+            recipients:       list of email addresses
+            explanations:     list of {break_id, explanation, explained_amount}
+            explainer_email:  email of the operator who explained
+            accepted_all:     True if the operator hit "Accept all"
+            attachment_path:  absolute path to the Keystone_* Excel
+
+        Returns dict {ok, message}.
+        """
+        if not self.is_configured():
+            return {'ok': False, 'message': 'Azure credentials not configured.'}
+        if not recipients:
+            return {'ok': False, 'message': 'No recipients specified.'}
+
+        from datetime import datetime as _dt
+        try:
+            display_date = _dt.strptime(date_str, '%Y-%m-%d').strftime('%d-%m-%Y')
+        except ValueError:
+            display_date = date_str
+
+        type_label = recon_type.capitalize()
+        subject_prefix = '[EXPLAINED]' if accepted_all else '[UPDATE]'
+        subject = f"{subject_prefix} {type_label} Recon {display_date}"
+
+        # Build the explanations list as HTML rows.
+        rows_html = ''
+        for exp in (explanations or []):
+            bid = str(exp.get('break_id') or '')
+            text = str(exp.get('explanation') or '').replace('<', '&lt;').replace('>', '&gt;')
+            amt = exp.get('explained_amount')
+            amt_cell = ''
+            if amt is not None and str(amt).strip():
+                try:
+                    amt_val = float(amt)
+                    amt_cell = f'<td style="padding:6px 10px;font-family:monospace;text-align:right;border:1px solid #e0e0e0">₹{amt_val:,.2f}</td>'
+                except (TypeError, ValueError):
+                    amt_cell = f'<td style="padding:6px 10px;border:1px solid #e0e0e0">{amt}</td>'
+            else:
+                amt_cell = '<td style="padding:6px 10px;color:#999;border:1px solid #e0e0e0">—</td>'
+            rows_html += (
+                f'<tr>'
+                f'<td style="padding:6px 10px;font-family:monospace;border:1px solid #e0e0e0">{bid}</td>'
+                f'<td style="padding:6px 10px;border:1px solid #e0e0e0">{text}</td>'
+                f'{amt_cell}'
+                f'</tr>'
+            )
+
+        explainer_line = (
+            f'<p style="margin:16px 0 8px;color:#555">'
+            f'Explained by <strong>{explainer_email}</strong></p>'
+            if explainer_email else ''
+        )
+        accept_note = (
+            '<p style="color:#1A7A4A;font-weight:600;margin:12px 0">'
+            '&#x2713; All breaks have been explained or are within tolerance. '
+            'The operator has accepted the run.</p>'
+            if accepted_all else ''
+        )
+
+        if rows_html:
+            table_html = (
+                '<table style="border-collapse:collapse;width:100%;'
+                'font-family:Arial,sans-serif;font-size:13px;margin:12px 0">'
+                '<thead><tr style="background:#1B2A4A;color:white">'
+                '<th style="padding:8px 10px;text-align:left">Break</th>'
+                '<th style="padding:8px 10px;text-align:left">Explanation</th>'
+                '<th style="padding:8px 10px;text-align:right">Amount</th>'
+                '</tr></thead><tbody>' + rows_html + '</tbody></table>'
+            )
+        else:
+            table_html = (
+                '<p style="color:#666;margin:12px 0">'
+                'No per-break explanations were submitted. '
+                '(All breaks were within tolerance.)</p>'
+            )
+
+        body_html = (
+            '<div style="font-family:Arial,sans-serif;max-width:720px;'
+            'padding:20px;color:#1B2A4A">'
+            f'<h2 style="color:#AC8A2F;margin:0 0 12px">'
+            f'{type_label} Reconciliation &mdash; {display_date} &mdash; {subject_prefix}'
+            '</h2>'
+            f'{explainer_line}'
+            f'{accept_note}'
+            f'{table_html}'
+            '<p style="color:#666;font-size:12px;margin-top:16px">'
+            'The updated reconciliation report is attached. This follow-up '
+            'closes the open break window &mdash; no further hourly reminders will fire.'
+            '</p>'
+            '<p style="color:#888;font-size:11px;margin-top:20px">'
+            'Generated by Keystone &mdash; GoldStandard Wealth Pvt Ltd'
+            '</p>'
+            '</div>'
+        )
+
+        # Build attachments
+        import base64 as _b64, os as _os
+        attachments = []
+        if attachment_path and _os.path.exists(attachment_path):
+            try:
+                with open(attachment_path, 'rb') as _f:
+                    file_bytes = _f.read()
+                attachments = [{
+                    '@odata.type':  '#microsoft.graph.fileAttachment',
+                    'name':         _os.path.basename(attachment_path),
+                    'contentType':  'application/octet-stream',
+                    'contentBytes': _b64.b64encode(file_bytes).decode('ascii'),
+                }]
+            except Exception as e:
+                logger.warning(f'send_explanation_followup: attach failed: {e}')
+
+        token = self._get_token()
+        mailbox = self.mailbox
+        import requests as _req
+        try:
+            r = _req.post(
+                f'https://graph.microsoft.com/v1.0/users/{mailbox}/sendMail',
+                headers={'Authorization': f'Bearer {token}',
+                         'Content-Type': 'application/json'},
+                json={
+                    'message': {
+                        'subject': subject,
+                        'body': {'contentType': 'HTML', 'content': body_html},
+                        'toRecipients': [
+                            {'emailAddress': {'address': r}} for r in recipients
+                        ],
+                        'attachments': attachments,
+                    },
+                    'saveToSentItems': True,
+                },
+                timeout=30,
+            )
+        except Exception as e:  # noqa: BLE001
+            return {'ok': False, 'message': f'network error: {e}'}
+        if r.status_code not in (200, 202):
+            return {
+                'ok':      False,
+                'message': f'Graph sendMail {r.status_code}: {r.text[:300]}',
+            }
+        return {
+            'ok':      True,
+            'message': f'sent to {len(recipients)} recipient(s)',
+        }
