@@ -1589,16 +1589,16 @@ def write_0096_excel(rows: List[Output0096Row], out_path: str, date_str: str):
     wb = xlwt.Workbook(encoding='utf-8')
     ws = wb.add_sheet('SHEET')
 
-    # Header names must match WS's Java mapper exactly (no spaces).
-    # WS's mapper keys columns by header text; a space causes a null
-    # column lookup and the upload fails with NullPointerException.
+    # Header names must match the WS 0096 Block Deals template exactly
+    # (Upload_Formats/0096 Block Deals.xls, Sample sheet). Spaces are part
+    # of the canonical column names — do not strip them.
     headers = [
-        'BrokerCode', 'Dummy', 'SecurityCode', 'Exchange',
-        'TransactionType', 'TransactionDate', 'SettlementDate',
-        'Quantity', 'Price', 'BrokeragePerShare', 'ServiceTaxPerShare',
-        'SettlementFlag', 'MarketRate', 'CashSymbolcode', 'BlockFlag',
-        'SecurityTransactionTax', 'AccruedInterestPerUnit',
-        'MapinID', 'Renarks', 'CashsettlementDate', 'StampDuty',
+        'Broker Code', 'Dummy', 'Security Code', 'Exchange',
+        'Transaction Type', 'Transaction Date', 'Settlement Date',
+        'Quantity', 'Price', 'Brokerage Per Share', 'Service Tax Per Share',
+        'Settlement Flag', 'Market Rate', 'Cash Symbol code', 'Block Flag',
+        'Security Transaction Tax', 'Accrued Interest Per Unit',
+        'Mapin ID', 'Renarks', 'Cash settlement Date', 'StampDuty',
     ]
 
     # Header style — dark blue with white bold text
@@ -1646,19 +1646,19 @@ def write_0096_excel(rows: List[Output0096Row], out_path: str, date_str: str):
         ws.col(c).width = w
 
     for r_idx, row in enumerate(rows, 1):
-        # Dummy and ServiceTaxPerShare are left blank (empty string) rather
-        # than numeric 0 — WS's mapper expects empty cells for these two and
-        # a numeric 0 has been observed to contribute to mapper errors.
+        # Dummy (col B) and Service Tax Per Share (col K) carry numeric 0
+        # per the official template's Sample sheet. StampDuty (col U) is
+        # left blank as the template does.
         vals = [
-            row.broker_code, '', row.security_code, row.exchange,
+            row.broker_code, 0, row.security_code, row.exchange,
             row.transaction_type,
             _serial(row.transaction_date),     # col 5  — serial date
             _serial(row.settlement_date),      # col 6  — serial date (blank if not set)
-            row.quantity, row.price, row.brokerage_per_share, '',
+            row.quantity, row.price, row.brokerage_per_share, 0,
             row.settlement_flag, row.market_rate, row.cash_symbol, row.block_flag,
             row.stt, row.accrued_interest, row.mapin_id, row.remarks,
             _serial(row.cash_settlement_date), # col 19 — serial date
-            '',   # STAMPDUTY: blank
+            '',   # StampDuty: blank
         ]
         styles = [
             style_default, style_default, style_default, style_default,
