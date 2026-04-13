@@ -488,8 +488,100 @@ def _cmd_ping(payload: dict[str, Any]) -> CommandResult:
 
 
 def _cmd_reminder_check(payload: dict[str, Any]) -> CommandResult:
-    # P3a — filled in next
-    return CommandResult.failure("reminder_check handler not yet implemented")
+    """Fire any due reminder emails from the local reminder queue.
+
+    Loads the reminder store from ``{workdir}/data/recon_reminders.json``,
+    reads due entries, sends a reminder email for each, and marks them
+    as sent so they won't re-fire until the next REMINDER_INTERVAL window.
+
+    Payload is ignored — the control plane just signals "now is the
+    time to check". The agent's clock and reminder queue are the
+    source of truth for what's actually due.
+
+    Returns a summary: ``{fired: N, skipped: M, errors: K,
+    pruned_stale: S}``. No exception propagates out; crashes inside
+    a single reminder are captured and counted as errors.
+    """
+    settings = load_settings()
+
+    # Build the M365 config. Same helper the recon handlers use.
+    azure_cfg = _azure_config_for_ingestor(settings)
+    if azure_cfg is None:
+        return CommandResult.failure(
+            "M365 credentials not configured — cannot fire reminders",
+        )
+
+    reminder_path = Path(settings.workdir) / "data" / "recon_reminders.json"
+    from core.recon_reminders import ReconReminderStore
+
+    store = ReconReminderStore(reminder_path)
+    # Housekeep: drop entries older than STALE_AFTER so the file doesn't
+    # grow unbounded when operators stop caring about old dates.
+    pruned = store.prune_stale()
+
+    due = store.get_due()
+    if not due:
+        return CommandResult.success({
+            "fired": 0,
+            "skipped": 0,
+            "errors": 0,
+            "pruned_stale": pruned,
+            "message": "no reminders due",
+        })
+
+    from core.email_ingestor import EmailIngestor
+
+    ingestor = EmailIngestor(azure_cfg)
+
+    fired = 0
+    errors = 0
+    error_details: list[str] = []
+    for entry in due:
+        rtype = entry.get("type", "")
+        date_str = entry.get("date", "")
+        recipients = entry.get("recipients", []) or []
+        initial_sent_at = entry.get("initial_sent_at", "")
+        reminder_count = int(entry.get("reminder_count", 0) or 0)
+        attachment_path = entry.get("attachment_path") or None
+
+        if not rtype or not date_str or not recipients:
+            errors += 1
+            error_details.append(f"{rtype}/{date_str}: incomplete entry")
+            continue
+
+        try:
+            result = ingestor.send_reminder_email(
+                recon_type=rtype,
+                date_str=date_str,
+                recipients=recipients,
+                initial_sent_at=initial_sent_at,
+                reminder_count=reminder_count,
+                attachment_path=attachment_path,
+            )
+            if result.get("ok"):
+                store.mark_reminder_sent(rtype, date_str)
+                fired += 1
+            else:
+                errors += 1
+                error_details.append(
+                    f"{rtype}/{date_str}: {result.get('message', 'unknown error')}"
+                )
+        except Exception as rem_err:  # noqa: BLE001
+            errors += 1
+            error_details.append(f"{rtype}/{date_str}: {type(rem_err).__name__}: {rem_err}")
+
+    summary: dict[str, Any] = {
+        "fired": fired,
+        "skipped": 0,
+        "errors": errors,
+        "pruned_stale": pruned,
+    }
+    if error_details:
+        summary["error_details"] = error_details[:10]
+
+    # Any fired reminder counts as a success even if others failed —
+    # the control plane can see the error detail in the result payload.
+    return CommandResult.success(summary)
 
 
 def _cmd_bank_finalize(payload: dict[str, Any]) -> CommandResult:
