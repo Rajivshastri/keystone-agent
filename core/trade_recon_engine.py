@@ -1589,16 +1589,19 @@ def write_0096_excel(rows: List[Output0096Row], out_path: str, date_str: str):
     wb = xlwt.Workbook(encoding='utf-8')
     ws = wb.add_sheet('SHEET')
 
-    # Header names must match the WS 0096 Block Deals template exactly
-    # (Upload_Formats/0096 Block Deals.xls, Sample sheet). Spaces are part
-    # of the canonical column names — do not strip them.
+    # Header names must match WS's Java mapper exactly, which expects NO
+    # spaces. The Upload_Formats/0096 Block Deals.xls Sample sheet carries
+    # spaced labels ("Broker Code"), but a file actually accepted by WS on
+    # 2026-04-13 (0096 Block Deals 13042026.xls) uses no-space headers
+    # ("BrokerCode"). The Sample sheet is a human-readable cheat sheet, not
+    # the mapper's authoritative header list.
     headers = [
-        'Broker Code', 'Dummy', 'Security Code', 'Exchange',
-        'Transaction Type', 'Transaction Date', 'Settlement Date',
-        'Quantity', 'Price', 'Brokerage Per Share', 'Service Tax Per Share',
-        'Settlement Flag', 'Market Rate', 'Cash Symbol code', 'Block Flag',
-        'Security Transaction Tax', 'Accrued Interest Per Unit',
-        'Mapin ID', 'Renarks', 'Cash settlement Date', 'StampDuty',
+        'BrokerCode', 'Dummy', 'SecurityCode', 'Exchange',
+        'TransactionType', 'TransactionDate', 'SettlementDate',
+        'Quantity', 'Price', 'BrokeragePerShare', 'ServiceTaxPerShare',
+        'SettlementFlag', 'MarketRate', 'CashSymbolcode', 'BlockFlag',
+        'SecurityTransactionTax', 'AccruedInterestPerUnit',
+        'MapinID', 'Renarks', 'CashsettlementDate', 'StampDuty',
     ]
 
     # Header style — dark blue with white bold text
@@ -1646,11 +1649,12 @@ def write_0096_excel(rows: List[Output0096Row], out_path: str, date_str: str):
         ws.col(c).width = w
 
     for r_idx, row in enumerate(rows, 1):
-        # Dummy (col B) and Service Tax Per Share (col K) carry numeric 0
-        # per the official template's Sample sheet. StampDuty (col U) is
-        # left blank as the template does.
+        # Dummy (col B) must be written as an empty cell (xlrd type 0), NOT
+        # numeric 0. Confirmed against a WS-accepted file (0096 Block Deals
+        # 13042026.xls). Service Tax Per Share (K) stays numeric 0 and
+        # StampDuty (U) stays blank, both matching that same file.
         vals = [
-            row.broker_code, 0, row.security_code, row.exchange,
+            row.broker_code, '', row.security_code, row.exchange,
             row.transaction_type,
             _serial(row.transaction_date),     # col 5  — serial date
             _serial(row.settlement_date),      # col 6  — serial date (blank if not set)
