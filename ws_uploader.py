@@ -49,6 +49,108 @@ def upload_creds_configured() -> bool:
     return bool(_upload_user() and _upload_pass())
 
 
+# ── LibreOffice resave (fixes POI BIFF rejection) ───────────────────────────
+
+def _find_soffice() -> str:
+    """Locate LibreOffice's headless binary. Returns '' if not found.
+
+    Keystone runs on customer Windows machines where LibreOffice is the
+    most common conversion tool. Also checks common Linux paths for
+    completeness.
+    """
+    import shutil as _shutil
+    # Explicit override
+    override = os.environ.get("KEYSTONE_SOFFICE", "")
+    if override and Path(override).exists():
+        return override
+    # PATH search (works on both Windows and Linux)
+    found = _shutil.which("soffice") or _shutil.which("soffice.bin")
+    if found:
+        return found
+    # Common Windows install locations
+    for p in (r"C:\Program Files\LibreOffice\program\soffice.exe",
+              r"C:\Program Files (x86)\LibreOffice\program\soffice.exe"):
+        if Path(p).exists():
+            return p
+    # Common Linux install locations
+    for p in ("/usr/bin/soffice", "/usr/lib/libreoffice/program/soffice",
+              "/opt/libreoffice/program/soffice"):
+        if Path(p).exists():
+            return p
+    return ""
+
+
+def _resave_xls_via_soffice(xls_path: str) -> str:
+    """Re-save an xls file through LibreOffice headless so its BIFF record
+    set matches what Apache POI expects. Returns the path to the re-saved
+    file (same path; the original is replaced in place).
+
+    xlwt produces a minimal BIFF8 stream that WS's Apache POI-based
+    trade-posting mapper rejects with NullPointerException. LibreOffice
+    re-saves with the fuller record set POI requires.
+
+    If LibreOffice isn't available, logs a warning and returns the
+    original path unchanged. On Windows, install LibreOffice from
+    https://www.libreoffice.org/download/ (the defaults are fine).
+    """
+    import subprocess as _sp
+    import tempfile as _tmp
+    import shutil as _shutil
+
+    soffice = _find_soffice()
+    if not soffice:
+        log.warning(
+            "_resave_xls_via_soffice: LibreOffice (soffice) not found. The "
+            "raw xlwt 0096 will be uploaded as-is and WS will likely reject "
+            "it with NullPointerException. Install LibreOffice from "
+            "libreoffice.org/download or set KEYSTONE_SOFFICE to override "
+            "the binary path."
+        )
+        return xls_path
+
+    src = Path(xls_path)
+    if not src.exists():
+        return xls_path
+
+    with _tmp.TemporaryDirectory(prefix="soffice_resave_") as tdir:
+        staging_in = Path(tdir) / src.name
+        _shutil.copy2(src, staging_in)
+
+        cmd = [
+            soffice,
+            "--headless",
+            "--convert-to", "xls",
+            "--outdir", tdir,
+            str(staging_in),
+        ]
+        try:
+            r = _sp.run(cmd, capture_output=True, timeout=120, text=True)
+        except Exception as e:
+            log.warning(f"_resave_xls_via_soffice: soffice invocation failed: {e}")
+            return xls_path
+
+        if r.returncode != 0:
+            log.warning(
+                f"_resave_xls_via_soffice: soffice returned {r.returncode}; "
+                f"stdout={r.stdout[:300]!r}  stderr={r.stderr[:300]!r}"
+            )
+            return xls_path
+
+        out_candidates = list(Path(tdir).glob("*.xls"))
+        out_candidates = [p for p in out_candidates if p != staging_in]
+        if not out_candidates:
+            log.warning("_resave_xls_via_soffice: no converted file produced")
+            return xls_path
+
+        converted = out_candidates[0]
+        _shutil.copy2(converted, src)
+        log.info(
+            f"_resave_xls_via_soffice: replaced {src.name} "
+            f"({src.stat().st_size} bytes) with POI-compatible version"
+        )
+        return str(src)
+
+
 # ── Login (reuse ws_downloader's AES login, but with upload creds) ───────────
 
 def _login_upload(session: _requests.Session, auth_cache: Path) -> None:
@@ -168,6 +270,15 @@ def upload_0096(file_path: str, progress_cb=None, config_dir: Path = None) -> Up
     fpath = Path(file_path)
     if not fpath.exists():
         return UploadResult(False, f"File not found: {fpath}")
+
+    # Re-save through LibreOffice so the BIFF record set matches what
+    # Apache POI expects. Subprocess bounded to 120s; in practice a
+    # 4-row file converts in <5s. No-op with warning when soffice is
+    # not installed.
+    if fpath.suffix.lower() == ".xls":
+        if progress_cb:
+            progress_cb("resave", "Re-saving via LibreOffice for POI compatibility...")
+        _resave_xls_via_soffice(str(fpath))
 
     base = _base_url()
     if config_dir is None:
