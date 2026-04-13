@@ -122,6 +122,179 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _recon_recipients(settings: AgentSettings) -> list[str]:
+    """Return the configured recon email recipients, or an empty list.
+
+    Sourced from ``settings.extras["recon_recipients"]``. A list of email
+    addresses as strings. Empty list = no auto-email (handled gracefully
+    upstream — the recon still completes, we just log a warning).
+    """
+    extras = settings.extras or {}
+    raw = extras.get("recon_recipients") or []
+    if isinstance(raw, str):
+        # Tolerant: allow a single address or a comma-separated list
+        return [a.strip() for a in raw.split(",") if a.strip()]
+    if isinstance(raw, list):
+        return [str(a).strip() for a in raw if str(a).strip()]
+    return []
+
+
+def _azure_config_for_ingestor(settings: AgentSettings) -> dict | None:
+    """Build the azure_cfg dict the EmailIngestor expects.
+
+    Returns None if any required credential is missing — callers log a
+    warning and skip email sending. The secret is pulled from the DPAPI
+    secret store; everything else lives in settings.extras.
+    """
+    from .secrets import KEY_M365_CLIENT_SECRET, get_store
+    from .setup import EK_M365_CLIENT_ID, EK_M365_MAILBOX, EK_M365_TENANT_ID
+
+    extras = settings.extras or {}
+    cfg = {
+        "tenant_id":     extras.get(EK_M365_TENANT_ID, ""),
+        "client_id":     extras.get(EK_M365_CLIENT_ID, ""),
+        "client_secret": get_store().get(KEY_M365_CLIENT_SECRET) or "",
+        "mailbox":       extras.get(EK_M365_MAILBOX, ""),
+    }
+    if not all(cfg.values()):
+        return None
+    return cfg
+
+
+def _send_recon_email(
+    recon_type: str,
+    date_str: str,
+    summary: Any,
+    results_or_dict: Any,
+    attachment_path: str | None,
+    log: _LogCollector,
+    settings: AgentSettings,
+) -> None:
+    """Fire the post-recon summary email and queue a reminder if needed.
+
+    Mirrors Flask's auto-email flow in app.py for holdings (line 1868,
+    2142), bank (line 2327), and trade (line 3349) reconciliations.
+    Best-effort: failures log a warning but never fail the run — the
+    recon results still ship to the control plane via RunPush.
+
+    recon_type:      "holdings" | "bank" | "trade"
+    summary:         engine-native summary object (for bank and trade)
+                     or None (holdings uses the results dict directly)
+    results_or_dict: for holdings, the results dict {category: [rows]}
+                     for bank/trade, the summary.to_dict() dict
+    attachment_path: path to the Excel report to attach (optional)
+    """
+    recipients = _recon_recipients(settings)
+    if not recipients:
+        log(
+            f"Recon auto-email skipped — extras.recon_recipients is empty. "
+            f"Add recipient addresses to agent-config.json extras to enable.",
+            level="warning",
+        )
+        return
+
+    azure_cfg = _azure_config_for_ingestor(settings)
+    if azure_cfg is None:
+        log(
+            "Recon auto-email skipped — M365 credentials not configured",
+            level="warning",
+        )
+        return
+
+    try:
+        from core.email_ingestor import EmailIngestor
+
+        ingestor = EmailIngestor(azure_cfg)
+        log(f"Sending {recon_type} recon email to: {', '.join(recipients)}")
+
+        if recon_type == "holdings":
+            # send_recon_summary expects the results dict
+            email_result = ingestor.send_recon_summary(
+                results_or_dict,
+                date_str,
+                recipients,
+                attachment_path=attachment_path,
+            )
+        elif recon_type == "bank":
+            email_result = ingestor.send_bank_recon_summary(
+                results_or_dict,
+                date_str,
+                recipients,
+                attachment_path=attachment_path,
+            )
+        elif recon_type == "trade":
+            email_result = ingestor.send_trade_recon_summary(
+                results_or_dict,
+                date_str,
+                recipients,
+                attachment_path=attachment_path,
+            )
+        else:
+            log(f"Unknown recon_type {recon_type!r} — not sending email", level="warning")
+            return
+
+        if email_result.get("ok"):
+            log(f"Recon email sent: {email_result.get('message', '')}")
+
+            # Queue a reminder if there are breaks requiring a final
+            # explained email. Matches Flask app.py:2334-2341. Trade
+            # recon does NOT queue reminders — trade breaks must be
+            # reconciled (not explained), so there's no "final email
+            # with explanation" workflow to remind about.
+            if recon_type in ("holdings", "bank"):
+                breaks = _count_breaks_for_reminder(recon_type, summary, results_or_dict)
+                if breaks > 0:
+                    try:
+                        from core.recon_reminders import ReconReminderStore
+                        reminder_path = Path(settings.workdir) / "data" / "recon_reminders.json"
+                        store = ReconReminderStore(str(reminder_path))
+                        store.record_initial_sent(
+                            recon_type,
+                            date_str,
+                            recipients,
+                            attachment_path=attachment_path,
+                        )
+                        log(f"Reminder queued for {recon_type}/{date_str} ({breaks} break(s) pending)")
+                    except Exception as rem_err:  # noqa: BLE001
+                        log(f"Reminder queue failed: {rem_err}", level="warning")
+        else:
+            log(
+                f"Recon email failed: {email_result.get('message', 'unknown error')}",
+                level="error",
+            )
+    except Exception as e:  # noqa: BLE001
+        log(f"Recon email failed: {e}", level="warning")
+
+
+def _count_breaks_for_reminder(
+    recon_type: str, summary: Any, results_or_dict: Any
+) -> int:
+    """Count breaks that would trigger a reminder queue entry.
+
+    Holdings: len(results['unexplained']) + len(results['custody_only'])
+        + len(results['ws_only']) — same rule the engine uses.
+    Bank: summary.breaks (same as Flask).
+    """
+    try:
+        if recon_type == "holdings":
+            if isinstance(results_or_dict, dict):
+                return (
+                    len(results_or_dict.get("unexplained", []) or [])
+                    + len(results_or_dict.get("custody_only", []) or [])
+                    + len(results_or_dict.get("ws_only", []) or [])
+                )
+        if recon_type == "bank":
+            # Prefer the engine summary's breaks attribute; fall back
+            # to the dict in case the caller didn't pass the live object.
+            if hasattr(summary, "breaks"):
+                return int(summary.breaks or 0)
+            if isinstance(results_or_dict, dict):
+                return int(results_or_dict.get("breaks", 0) or 0)
+    except Exception:
+        return 0
+    return 0
+
+
 def _keystone_rename(
     engine_output_path: str | None,
     recon_type: ReconType,
@@ -429,6 +602,19 @@ def _run_holdings(job: PollJob) -> RunPush:
         if renamed:
             _get_local_runs().record(job.id, "holdings", date_str, renamed)
 
+        # Auto-email the holdings recon summary to stakeholders. Mirrors
+        # Flask app.py:1868. Best-effort — recon still ships to the
+        # control plane even if the email send fails.
+        _send_recon_email(
+            recon_type="holdings",
+            date_str=date_str,
+            summary=None,
+            results_or_dict=result.results,
+            attachment_path=renamed,
+            log=log,
+            settings=settings,
+        )
+
         counts = derive_counts_from_results("holdings", result.results)
         status: RunStatus = _holdings_status_from_counts(counts)
         return RunPush(
@@ -588,6 +774,19 @@ def _run_bank(job: PollJob) -> RunPush:
             log(f"Bank export failed: {exp_err}", level="warning")
             bank_output_path = None
 
+        # Auto-email the bank recon summary to stakeholders. Mirrors
+        # Flask app.py:2304-2346. Best-effort — recon still ships to
+        # the control plane even if the email send fails.
+        _send_recon_email(
+            recon_type="bank",
+            date_str=date_str,
+            summary=summary,
+            results_or_dict=summary_dict,
+            attachment_path=bank_output_path,
+            log=log,
+            settings=settings,
+        )
+
         counts = derive_counts_from_results("bank", summary_dict)
         breaks = counts.get("breaks", 0)
         status: RunStatus = "breaks_found" if isinstance(breaks, int) and breaks > 0 else "all_clear"
@@ -688,6 +887,20 @@ def _run_trade(job: PollJob) -> RunPush:
         if renamed_0096:
             log(f"Trade 0096 upload file: {renamed_0096}")
         att = attachment_metadata(renamed_recon)
+
+        # Auto-email the trade recon summary to stakeholders. Mirrors
+        # Flask app.py:3349. Best-effort — the auto-dispatch below still
+        # runs even if the email send fails. Trade recon does NOT queue
+        # reminders (breaks must be reconciled, not explained).
+        _send_recon_email(
+            recon_type="trade",
+            date_str=date_str,
+            summary=getattr(result, "summary", None),
+            results_or_dict=summary_dict,
+            attachment_path=renamed_recon,
+            log=log,
+            settings=settings,
+        )
 
         # Auto-dispatch: when trade recon is all_clear and a 0096 file
         # exists, upload it to WS and email custody interface files to
