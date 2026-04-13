@@ -38,6 +38,13 @@ a = Analysis(
         'win32service',
         'win32event',
         'servicemanager',
+        # COM automation for ws_uploader's Excel fallback (re-saves
+        # 0096 xls through Microsoft Excel when LibreOffice isn't
+        # installed on the agent machine)
+        'win32com',
+        'win32com.client',
+        'pythoncom',
+        'pywintypes',
     ],
     hookspath=[],
     hooksconfig={},

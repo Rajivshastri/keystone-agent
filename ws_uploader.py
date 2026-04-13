@@ -80,75 +80,146 @@ def _find_soffice() -> str:
     return ""
 
 
+def _resave_xls_via_excel_com(xls_path: str) -> bool:
+    """Re-save an xls file through Microsoft Excel via win32com.client.
+
+    Windows-only. Succeeds only if Excel is installed on the agent
+    machine. Returns True on success, False otherwise.
+
+    Excel save formats of interest:
+      xlExcel8 = 56  → 97-2003 .xls (BIFF8) — what WS wants
+    """
+    import sys
+    if sys.platform != "win32":
+        return False
+    try:
+        import win32com.client  # pywin32
+        import pythoncom
+    except ImportError:
+        return False
+
+    src = Path(xls_path).resolve()
+    if not src.exists():
+        return False
+
+    excel = None
+    wb = None
+    try:
+        # Initialize COM for this thread (Flask/uvicorn worker threads
+        # don't auto-init COM)
+        pythoncom.CoInitialize()
+        excel = win32com.client.DispatchEx("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        # Open, immediately re-save in xlExcel8 format (56), close
+        wb = excel.Workbooks.Open(str(src), ReadOnly=False, UpdateLinks=0)
+        wb.SaveAs(str(src), FileFormat=56)
+        wb.Close(SaveChanges=False)
+        wb = None
+        log.info(
+            f"_resave_xls_via_excel_com: replaced {src.name} "
+            f"({src.stat().st_size} bytes) with Excel-saved version"
+        )
+        return True
+    except Exception as e:
+        log.warning(f"_resave_xls_via_excel_com: {type(e).__name__}: {e}")
+        return False
+    finally:
+        try:
+            if wb is not None:
+                wb.Close(SaveChanges=False)
+        except Exception:
+            pass
+        try:
+            if excel is not None:
+                excel.Quit()
+        except Exception:
+            pass
+        try:
+            pythoncom.CoUninitialize()
+        except Exception:
+            pass
+
+
 def _resave_xls_via_soffice(xls_path: str) -> str:
-    """Re-save an xls file through LibreOffice headless so its BIFF record
-    set matches what Apache POI expects. Returns the path to the re-saved
-    file (same path; the original is replaced in place).
+    """Re-save an xls file so its BIFF record set matches what Apache POI
+    expects. Returns the path to the re-saved file (same path; the
+    original is replaced in place).
 
     xlwt produces a minimal BIFF8 stream that WS's Apache POI-based
-    trade-posting mapper rejects with NullPointerException. LibreOffice
-    re-saves with the fuller record set POI requires.
+    trade-posting mapper rejects with NullPointerException. A full
+    Excel-compatible writer is needed to fill in the optional records
+    POI requires.
 
-    If LibreOffice isn't available, logs a warning and returns the
-    original path unchanged. On Windows, install LibreOffice from
-    https://www.libreoffice.org/download/ (the defaults are fine).
+    Strategy (first-available wins):
+      1. LibreOffice headless — cross-platform, free
+      2. Microsoft Excel via win32com.client — Windows-only, requires
+         Excel installed on the agent machine
+
+    If neither is available, logs a warning and returns the original
+    path unchanged. On Windows, install LibreOffice from
+    https://www.libreoffice.org/download/ OR have Microsoft Excel
+    installed — the uploader will automatically pick whichever is
+    present.
     """
     import subprocess as _sp
     import tempfile as _tmp
     import shutil as _shutil
 
-    soffice = _find_soffice()
-    if not soffice:
-        log.warning(
-            "_resave_xls_via_soffice: LibreOffice (soffice) not found. The "
-            "raw xlwt 0096 will be uploaded as-is and WS will likely reject "
-            "it with NullPointerException. Install LibreOffice from "
-            "libreoffice.org/download or set KEYSTONE_SOFFICE to override "
-            "the binary path."
-        )
-        return xls_path
-
     src = Path(xls_path)
     if not src.exists():
         return xls_path
 
-    with _tmp.TemporaryDirectory(prefix="soffice_resave_") as tdir:
-        staging_in = Path(tdir) / src.name
-        _shutil.copy2(src, staging_in)
+    # Tier 1: LibreOffice
+    soffice = _find_soffice()
+    if soffice:
+        with _tmp.TemporaryDirectory(prefix="soffice_resave_") as tdir:
+            staging_in = Path(tdir) / src.name
+            _shutil.copy2(src, staging_in)
 
-        cmd = [
-            soffice,
-            "--headless",
-            "--convert-to", "xls",
-            "--outdir", tdir,
-            str(staging_in),
-        ]
-        try:
-            r = _sp.run(cmd, capture_output=True, timeout=120, text=True)
-        except Exception as e:
-            log.warning(f"_resave_xls_via_soffice: soffice invocation failed: {e}")
-            return xls_path
+            cmd = [
+                soffice,
+                "--headless",
+                "--convert-to", "xls",
+                "--outdir", tdir,
+                str(staging_in),
+            ]
+            try:
+                r = _sp.run(cmd, capture_output=True, timeout=120, text=True)
+            except Exception as e:
+                log.warning(f"_resave_xls_via_soffice: soffice invocation failed: {e}")
+                r = None
 
-        if r.returncode != 0:
-            log.warning(
-                f"_resave_xls_via_soffice: soffice returned {r.returncode}; "
-                f"stdout={r.stdout[:300]!r}  stderr={r.stderr[:300]!r}"
-            )
-            return xls_path
+            if r is not None and r.returncode == 0:
+                out_candidates = list(Path(tdir).glob("*.xls"))
+                out_candidates = [p for p in out_candidates if p != staging_in]
+                if out_candidates:
+                    _shutil.copy2(out_candidates[0], src)
+                    log.info(
+                        f"_resave_xls_via_soffice: replaced {src.name} "
+                        f"({src.stat().st_size} bytes) with LibreOffice-saved "
+                        f"version"
+                    )
+                    return str(src)
+                log.warning("_resave_xls_via_soffice: no converted file produced")
+            elif r is not None:
+                log.warning(
+                    f"_resave_xls_via_soffice: soffice returned {r.returncode}; "
+                    f"stdout={r.stdout[:300]!r}  stderr={r.stderr[:300]!r}"
+                )
 
-        out_candidates = list(Path(tdir).glob("*.xls"))
-        out_candidates = [p for p in out_candidates if p != staging_in]
-        if not out_candidates:
-            log.warning("_resave_xls_via_soffice: no converted file produced")
-            return xls_path
-
-        converted = out_candidates[0]
-        _shutil.copy2(converted, src)
-        log.info(
-            f"_resave_xls_via_soffice: replaced {src.name} "
-            f"({src.stat().st_size} bytes) with POI-compatible version"
-        )
+    # Tier 2: Microsoft Excel via win32com (Windows + Excel installed)
+    if _resave_xls_via_excel_com(str(src)):
         return str(src)
+
+    log.warning(
+        "_resave_xls_via_soffice: no working xls re-save backend. The raw "
+        "xlwt 0096 will be uploaded as-is and WS will likely reject it with "
+        "NullPointerException. Install LibreOffice from libreoffice.org/"
+        "download OR ensure Microsoft Excel is installed on this machine. "
+        "Set KEYSTONE_SOFFICE to override the LibreOffice binary path."
+    )
+    return xls_path
 
 
 # ── Login (reuse ws_downloader's AES login, but with upload creds) ───────────
