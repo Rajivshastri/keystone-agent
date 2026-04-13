@@ -456,6 +456,10 @@ def execute_command(cmd_kind: str, payload: dict[str, Any]) -> CommandResult:
         # P3c: post-explanation follow-up email
         if cmd_kind == "send_final_email":
             return _cmd_send_final_email(payload)
+        # P3b/c: dashboard explain page pulls break detail from the
+        # agent's local results sidecar over the reverse channel.
+        if cmd_kind == "push_break_detail":
+            return _cmd_push_break_detail(payload)
         # P7: standing rules for agent autonomy
         if cmd_kind == "set_standing_rule":
             return _cmd_set_standing_rule(payload)
@@ -584,9 +588,82 @@ def _cmd_reminder_check(payload: dict[str, Any]) -> CommandResult:
     return CommandResult.success(summary)
 
 
+def _cmd_push_break_detail(payload: dict[str, Any]) -> CommandResult:
+    """Read the break-detail sidecar for a run and POST it to the CP.
+
+    Payload (from lib/break-detail.ts requestBreakDetail):
+        run_id:     control-plane run id (used in the POST URL)
+        job_id:     agent-local job id (used to look up the output
+                    path in local_runs)
+        recon_type: "bank" | "holdings" | "trade"
+        recon_date: "YYYY-MM-DD" (informational)
+
+    On success, POSTs the breaks array to /api/v1/agent/break-detail/
+    {run_id} and returns the row count in the command result. On
+    failure (missing local_runs row, missing sidecar, read error) we
+    POST an ``{error: ...}`` body so the cache flips to `failed` and
+    the dashboard explain page stops spinning.
+    """
+    run_id = str(payload.get("run_id") or "").strip()
+    job_id = str(payload.get("job_id") or "").strip()
+    if not run_id or not job_id:
+        return CommandResult.failure("missing run_id or job_id in payload")
+
+    from .transport import ControlPlaneClient, TransportError
+    from core.break_sidecar import read_sidecar
+
+    settings = load_settings()
+    client = ControlPlaneClient(settings)
+    try:
+        local = _get_local_runs().get(job_id)
+        if local is None:
+            try:
+                client.push_break_detail(
+                    run_id, error=f"no local_runs row for job {job_id}"
+                )
+            except TransportError:
+                pass
+            return CommandResult.failure(
+                f"no local_runs row for job {job_id}"
+            )
+
+        sidecar = read_sidecar(local.output_path, job_id)
+        if sidecar is None:
+            try:
+                client.push_break_detail(
+                    run_id, error="break sidecar missing on disk"
+                )
+            except TransportError:
+                pass
+            return CommandResult.failure("break sidecar missing on disk")
+
+        breaks = sidecar.get("breaks") or []
+        if not isinstance(breaks, list):
+            breaks = []
+        try:
+            client.push_break_detail(run_id, breaks=breaks)
+        except TransportError as te:
+            return CommandResult.failure(f"POST failed: {te}")
+        return CommandResult.success({
+            "run_id": run_id,
+            "break_count": len(breaks),
+        })
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _cmd_bank_finalize(payload: dict[str, Any]) -> CommandResult:
-    # P3b — filled in next
-    return CommandResult.failure("bank_finalize handler not yet implemented")
+    # P3b — the legacy Flask "bank finalize" flow is being replaced by
+    # the new break-explanation workflow (see KEYSTONE_HANDOVER.md).
+    # The submit handler on the control plane explain page validates
+    # the ₹100 rule server-side and dispatches send_final_email
+    # directly, so this command kind is unused in the new flow.
+    # Left here for completeness; future-proof for if we add a direct
+    # agent-side trigger.
+    return CommandResult.failure("bank_finalize superseded by explain workflow")
 
 
 def _cmd_send_final_email(payload: dict[str, Any]) -> CommandResult:
@@ -799,6 +876,16 @@ def _run_holdings(job: PollJob) -> RunPush:
         log(f"Holdings reconciliation complete — report at {renamed}")
         if renamed:
             _get_local_runs().record(job.id, "holdings", date_str, renamed)
+            # Write the break-detail sidecar next to the Excel so the
+            # push_break_detail reverse-channel command can serve it
+            # to the dashboard explain page later.
+            try:
+                from core.break_sidecar import write_holdings_sidecar
+                write_holdings_sidecar(
+                    renamed, job.id, date_str, result.results,
+                )
+            except Exception as side_err:  # noqa: BLE001
+                log(f"Holdings break sidecar write failed: {side_err}", level="warning")
 
         # Auto-email the holdings recon summary to stakeholders. Mirrors
         # Flask app.py:1868. Best-effort — recon still ships to the
@@ -968,6 +1055,16 @@ def _run_bank(job: PollJob) -> RunPush:
             if bank_output_path:
                 log(f"Bank reconciliation report: {bank_output_path}")
                 _get_local_runs().record(job.id, "bank", date_str, bank_output_path)
+                # Write the break-detail sidecar next to the Excel so
+                # the push_break_detail reverse-channel command can
+                # serve it to the dashboard explain page later.
+                try:
+                    from core.break_sidecar import write_bank_sidecar
+                    write_bank_sidecar(
+                        bank_output_path, job.id, date_str, summary_dict,
+                    )
+                except Exception as side_err:  # noqa: BLE001
+                    log(f"Bank break sidecar write failed: {side_err}", level="warning")
         except Exception as exp_err:  # noqa: BLE001
             log(f"Bank export failed: {exp_err}", level="warning")
             bank_output_path = None
@@ -1082,6 +1179,18 @@ def _run_trade(job: PollJob) -> RunPush:
         if renamed_recon:
             log(f"Trade reconciliation report: {renamed_recon}")
             _get_local_runs().record(job.id, "trade", date_str, renamed_recon)
+            # Write the break-detail sidecar next to the Excel. Trade
+            # breaks are not currently part of the explain workflow
+            # (trade breaks must be reconciled, not explained) but we
+            # still write the sidecar so push_break_detail has
+            # something to return for audit / investigation.
+            try:
+                from core.break_sidecar import write_trade_sidecar
+                write_trade_sidecar(
+                    renamed_recon, job.id, date_str, summary_dict,
+                )
+            except Exception as side_err:  # noqa: BLE001
+                log(f"Trade break sidecar write failed: {side_err}", level="warning")
         if renamed_0096:
             log(f"Trade 0096 upload file: {renamed_0096}")
         att = attachment_metadata(renamed_recon)

@@ -137,6 +137,32 @@ class ControlPlaneClient:
         )
         return HealthResponse.model_validate(resp)
 
+    def push_break_detail(
+        self,
+        run_id: str,
+        breaks: list[dict[str, Any]] | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        """POST per-break detail to the control plane's cache endpoint.
+
+        Called from the push_break_detail command handler. If `error`
+        is supplied, the server records the run as a fetch failure
+        (so the dashboard can stop spinning). Otherwise `breaks` must
+        be a list of engine-specific break rows the dashboard will
+        render on the explain page.
+        """
+        body: dict[str, Any] = {}
+        if error is not None:
+            body["error"] = error
+            body["breaks"] = []
+        else:
+            body["breaks"] = list(breaks or [])
+        return self._post_json(
+            f"/api/v1/agent/break-detail/{run_id}",
+            body,
+            authed=True,
+        )
+
     def ack_command(
         self,
         command_id: str,
