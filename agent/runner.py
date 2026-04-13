@@ -401,6 +401,112 @@ def execute_job(job: PollJob) -> RunPush:
     )
 
 
+# ── Reverse-channel command dispatch ──────────────────────────────── #
+
+
+class CommandResult:
+    """Return value from an agent command handler.
+
+    Success: CommandResult(ok=True, result={...})   (result optional)
+    Failure: CommandResult(ok=False, error="...")
+    """
+
+    __slots__ = ("ok", "result", "error")
+
+    def __init__(
+        self,
+        ok: bool,
+        result: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        self.ok = ok
+        self.result = result
+        self.error = error
+
+    @classmethod
+    def success(cls, result: dict[str, Any] | None = None) -> "CommandResult":
+        return cls(ok=True, result=result)
+
+    @classmethod
+    def failure(cls, error: str) -> "CommandResult":
+        return cls(ok=False, error=error)
+
+
+def execute_command(cmd_kind: str, payload: dict[str, Any]) -> CommandResult:
+    """Top-level dispatch for reverse-channel commands.
+
+    Mirrors execute_job but for commands. Unknown kinds return a
+    failure result so the control plane sees them in `failed` state
+    with a clear error — the agent does NOT silently drop anything.
+
+    New command kinds: add a handler function below and a case here.
+    Handler contract: takes a payload dict, returns a CommandResult.
+    Raise nothing — catch exceptions inside the handler and wrap them
+    in CommandResult.failure(...).
+    """
+    try:
+        if cmd_kind == "ping":
+            return _cmd_ping(payload)
+        # P3a: firing due reminders from the local queue
+        if cmd_kind == "reminder_check":
+            return _cmd_reminder_check(payload)
+        # P3b: operator-entered bank annotations -> final email
+        if cmd_kind == "bank_finalize":
+            return _cmd_bank_finalize(payload)
+        # P3c: post-explanation follow-up email
+        if cmd_kind == "send_final_email":
+            return _cmd_send_final_email(payload)
+        # P7: standing rules for agent autonomy
+        if cmd_kind == "set_standing_rule":
+            return _cmd_set_standing_rule(payload)
+        return CommandResult.failure(f"unknown command kind: {cmd_kind!r}")
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"Command handler {cmd_kind!r} crashed")
+        return CommandResult.failure(f"{type(e).__name__}: {e}")
+
+
+# ---- Handlers ----
+
+
+def _cmd_ping(payload: dict[str, Any]) -> CommandResult:
+    """Smoke-test command. Returns immediately with a success result.
+
+    Used by the control plane's /api/v1/admin/ping-agent (future) and
+    by the test harness to verify the reverse channel is wired up
+    end-to-end without needing any real side effects.
+    """
+    return CommandResult.success({
+        "pong": True,
+        "agent_time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "echoed_payload": payload,
+    })
+
+
+# The following handlers are stubs filled in by later priorities.
+# Each returns a failure so the control plane knows they were received
+# but not yet executable. Remove the stub once the real handler lands.
+
+
+def _cmd_reminder_check(payload: dict[str, Any]) -> CommandResult:
+    # P3a — filled in next
+    return CommandResult.failure("reminder_check handler not yet implemented")
+
+
+def _cmd_bank_finalize(payload: dict[str, Any]) -> CommandResult:
+    # P3b — filled in next
+    return CommandResult.failure("bank_finalize handler not yet implemented")
+
+
+def _cmd_send_final_email(payload: dict[str, Any]) -> CommandResult:
+    # P3c — filled in next
+    return CommandResult.failure("send_final_email handler not yet implemented")
+
+
+def _cmd_set_standing_rule(payload: dict[str, Any]) -> CommandResult:
+    # P7 — filled in later
+    return CommandResult.failure("set_standing_rule handler not yet implemented")
+
+
 # ── Pre-reconciliation pipeline ────────────────────────────────────── #
 #
 # Every reconciliation job (holdings, bank, trade) starts by ensuring

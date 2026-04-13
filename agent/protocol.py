@@ -80,9 +80,31 @@ class FileRequestJob(BaseModel):
     upload_url: str
 
 
+class AgentCommand(BaseModel):
+    """Reverse-channel command pushed from the control plane to the agent.
+
+    Rides on the poll response alongside jobs and file_requests. The
+    agent drains commands sequentially, executes each via
+    agent.runner._execute_command, and ACKs the result to
+    /api/v1/agent/commands/{id}/ack. See KEYSTONE_HANDOVER.md for the
+    full design.
+
+    ``kind`` is an open-ended string so new command types can be added
+    without bumping the protocol. The agent's command dispatcher is the
+    source of truth for what it recognises; unknown kinds ACK with an
+    error so the control plane sees them in `failed` state.
+    """
+
+    id: str
+    kind: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    expires_at: str  # ISO 8601
+
+
 class PollResponse(BaseModel):
     jobs: list[PollJob]
     file_requests: list[FileRequestJob] = Field(default_factory=list)
+    commands: list[AgentCommand] = Field(default_factory=list)
     update: UpdateNotification | None = None
 
 

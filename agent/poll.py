@@ -17,8 +17,8 @@ from datetime import datetime, timezone
 from .config import AgentSettings, load_settings
 from .local_runs import get_store as get_local_runs
 from .outbox import get_outbox
-from .protocol import FileRequestJob, HealthPing, PollJob, RunPush
-from .runner import execute_job
+from .protocol import AgentCommand, FileRequestJob, HealthPing, PollJob, RunPush
+from .runner import execute_command, execute_job
 from .transport import ControlPlaneClient, TransportError
 
 logger = logging.getLogger(__name__)
@@ -160,6 +160,23 @@ class PollLoop:
                 except Exception as e:  # noqa: BLE001
                     logger.exception(f"File request {fr.id} fulfil crashed: {e}")
 
+        # 4) Drain any reverse-channel commands handed down in the poll
+        #    envelope. Each command runs through runner.execute_command
+        #    and is ACKed back via the transport client. Command failures
+        #    never propagate — they're ACKed with ok=false so the control
+        #    plane sees them in `failed` state.
+        if resp.commands:
+            logger.info(
+                f"Received {len(resp.commands)} command(s) from control plane"
+            )
+            for cmd in resp.commands:
+                try:
+                    self._execute_and_ack_command(cmd)
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        f"Command {cmd.id} ({cmd.kind}) dispatcher crashed: {e}"
+                    )
+
         if not resp.jobs:
             return
         logger.info(f"Received {len(resp.jobs)} job(s) from control plane")
@@ -209,6 +226,36 @@ class PollLoop:
             logger.warning(f"File request {fr.id}: upload failed: {e}")
             return
         logger.info(f"File request {fr.id}: upload ok — {result}")
+
+    def _execute_and_ack_command(self, cmd: AgentCommand) -> None:
+        """Run one reverse-channel command end-to-end.
+
+        Runner returns a CommandResult. We ACK to the control plane
+        regardless of outcome — a failed command should end up in
+        `failed` state on the server, not silently retried.
+        """
+        logger.info(f"Executing command {cmd.id} kind={cmd.kind}")
+        result = execute_command(cmd.kind, cmd.payload)
+        try:
+            self._client.ack_command(
+                cmd.id,
+                result.ok,
+                result=result.result,
+                error=result.error,
+            )
+            if result.ok:
+                logger.info(f"Command {cmd.id} ACKed: ok")
+            else:
+                logger.info(f"Command {cmd.id} ACKed: failed — {result.error}")
+        except TransportError as e:
+            # ACK failed. The command row on the server stays in
+            # `delivered` state. The reaper sweep will eventually
+            # flip it to `expired` once expires_at passes — no auto-
+            # retry here to avoid double-executing external side
+            # effects like emails.
+            logger.warning(
+                f"Command {cmd.id} ACK failed ({e}) — server row stays delivered"
+            )
 
     # ---- dispatch ---- #
 

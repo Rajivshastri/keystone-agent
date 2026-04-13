@@ -137,6 +137,32 @@ class ControlPlaneClient:
         )
         return HealthResponse.model_validate(resp)
 
+    def ack_command(
+        self,
+        command_id: str,
+        ok: bool,
+        result: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        """ACK a reverse-channel command back to the control plane.
+
+        Flips the server-side command row to either `acked` (when ok=True)
+        or `failed` (when ok=False, with an `error` string). Idempotent —
+        a double-ACK returns 200 with already_acked=true. Raises
+        TransportError on network or 5xx failure so the caller can
+        decide whether to retry on the next poll tick.
+        """
+        body: dict[str, Any] = {"ok": ok}
+        if ok and result is not None:
+            body["result"] = result
+        if not ok:
+            body["error"] = error or "unknown error"
+        return self._post_json(
+            f"/api/v1/agent/commands/{command_id}/ack",
+            body,
+            authed=True,
+        )
+
     # ---- low-level ---- #
 
     def _post_json(
