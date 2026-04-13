@@ -358,6 +358,51 @@ def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
     else:
         log_fn("Security master (Z8_SecurityDetail) not found — upload it to improve Exchange matching", 'warning')
 
+    # Defensive fallback: if the Z8 load above produced an empty NSE ticker
+    # map (missing file, unreadable format, or wrong column name), try the
+    # shared masters/Z8_SecurityDetail.* directly. Without this dict the 0096
+    # SecurityCode column is blank and WS rejects the upload.
+    if not isin_to_nse_ticker:
+        from pathlib import Path as _P
+        _base = _P(fm.base_dir) if hasattr(fm, 'base_dir') else _P('.')
+        for _cand in [
+            _base / 'masters' / 'Z8_SecurityDetail.csv',
+            _base / 'masters' / 'Z8_SecurityDetail.xlsx',
+            _P('masters') / 'Z8_SecurityDetail.csv',
+            _P('masters') / 'Z8_SecurityDetail.xlsx',
+        ]:
+            if not _cand.exists():
+                continue
+            try:
+                import csv as _csv2
+                if str(_cand).lower().endswith('.csv'):
+                    with open(_cand, newline='', encoding='utf-8-sig') as _f:
+                        for _row in _csv2.DictReader(_f):
+                            _ru = {k.upper().strip(): v for k, v in _row.items()}
+                            _isin = str(_ru.get('ISINCODE') or '').strip()
+                            _tick = str(_ru.get('NSEMAPPING') or '').strip()
+                            if _isin and _tick and _isin not in isin_to_nse_ticker:
+                                isin_to_nse_ticker[_isin] = _tick
+                else:
+                    import openpyxl as _opx
+                    _wb = _opx.load_workbook(_cand, read_only=True, data_only=True)
+                    _ws = _wb[_wb.sheetnames[0]]
+                    _hdr = None
+                    for _r in _ws.iter_rows(values_only=True):
+                        if _hdr is None:
+                            _hdr = [str(c or '').upper().strip() for c in _r]
+                            continue
+                        _d = {_hdr[i]: str(v or '') for i, v in enumerate(_r) if i < len(_hdr)}
+                        _isin = _d.get('ISINCODE', '').strip()
+                        _tick = _d.get('NSEMAPPING', '').strip()
+                        if _isin and _tick and _isin not in isin_to_nse_ticker:
+                            isin_to_nse_ticker[_isin] = _tick
+                    _wb.close()
+                log_fn(f"Z8 fallback load: {len(isin_to_nse_ticker)} NSE tickers from {_cand.name}")
+                break
+            except Exception as _e2:
+                log_fn(f"Z8 fallback read error on {_cand}: {_e2}", 'warning')
+
     # ── CBD client→Mapin mapping ──────────────────────────────────────────── #
     cbd_path = fm.get_client_bank_details(date_str)
     cbd_client_map = _build_cbd_client_map(cbd_path, ws_orders, pool_map_raw)

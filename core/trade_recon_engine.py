@@ -1203,9 +1203,20 @@ class TradeReconEngine:
                 settle_date = _add_working_days(cn.trade_date, 1)
 
             for trade in cn.trades:
-                # SCRIPT CODE: use NSE ticker from Z8, fall back to WS instrument code
-                script_code = (isin_to_nse_ticker.get(trade.isin) or
-                               isin_to_instr.get(trade.isin, ''))
+                # SCRIPT CODE: the 0096 SecurityCode column MUST be the
+                # NSEMAPPING value from Z8_SecurityDetail (column L), looked up
+                # by the ISIN printed on the contract note. WS's Java mapper
+                # rejects (NullPointerException) files where this column carries
+                # the WS internal instrument code (EQxxxxxx) — that's a Z13
+                # INSTRUMENT_CODE and is NOT what the upload expects.
+                script_code = isin_to_nse_ticker.get(trade.isin, '')
+                if not script_code:
+                    logger.warning(
+                        '0096: NSEMAPPING not found in Z8 for ISIN %s (CN %s '
+                        'broker %s) — SecurityCode will be blank and WS will '
+                        'reject this row',
+                        trade.isin, cn.cn_no, cn.broker_sebi,
+                    )
 
                 charges = calculate_charges(
                     trade.qty, trade.wap, brok_rate, trade.side
