@@ -613,7 +613,16 @@ def _parse_cn_block(text: str, broker_sebi: str, broker_name: str) -> Optional[C
                find(r'TRADE DATE[:\s]+([A-Za-z]+\s+\d{1,2},?\s*\d{4})') or
                find(r'TRADE DATE[:\s]+(\S+)'))
     trade_date  = _normalise_date(_raw_td)
+    # Settlement date — match the same set of formats as trade_date:
+    #   "15 Apr 2026"   (day month year)
+    #   "Apr 15, 2026"  (month day, year — Haitong format)
+    #   "Apr 15,2026"   (no space after comma)
+    #   "Apr 15 2026"   (no comma)
+    # The last \S+ pattern is a greedy fallback but only grabs ONE token,
+    # which is why "Apr 15, 2026" was truncating to just "Apr" before.
     _raw_sd = (find(r'Settlement Date\s*[:\s]+\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})') or
+               find(r'SETTLEMENT DATE[.:\s]+([A-Za-z]+\s+\d{1,2},?\s*\d{4})') or
+               find(r'Settlement Date\s*[:\s]+\s*([A-Za-z]+\s+\d{1,2},?\s*\d{4})') or
                find(r'SETTLEMENT DATE[.:]*\s*(\S+)'))
     settle_date = _normalise_date(_raw_sd)
 
