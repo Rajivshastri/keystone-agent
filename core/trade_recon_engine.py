@@ -1686,6 +1686,104 @@ def write_0096_excel(rows: List[Output0096Row], out_path: str, date_str: str):
     logger.info(f"0096 file written: {out_path} ({len(rows)} rows)")
 
 
+def write_0096_xlsx(rows: List[Output0096Row], out_path: str, date_str: str):
+    """Write the WS 0096 upload file as Office Open XML (.xlsx).
+
+    Background: xlwt produces a minimal BIFF8 stream that Apache POI (the
+    library behind WS's Java mapper) rejects with NullPointerException —
+    several optional records POI expects are missing. Every WS-accepted
+    file in our history was Excel-saved, never an xlwt direct output.
+
+    openpyxl produces a fully POI-compatible OOXML file. POI's
+    WorkbookFactory auto-detects xls vs xlsx by magic bytes, so the WS
+    mapper handles xlsx natively without any server-side changes.
+
+    Column layout, cell types (string/number/date), headers, and data
+    semantics are identical to write_0096_excel — only the container
+    format changes.
+    """
+    from openpyxl import Workbook as _XWB
+    from openpyxl.styles import Font as _XFont, PatternFill as _XFill, \
+        Alignment as _XAlign, Border as _XBorder, Side as _XSide
+    from datetime import datetime as _ddt
+
+    wb = _XWB()
+    # Remove the default 'Sheet' and create one named 'SHEET' to match the
+    # working Apr 13 file's sheet name. Assigning ws.title = 'SHEET' on the
+    # default sheet triggers openpyxl's _unique_name which appends '1'
+    # because 'Sheet' and 'SHEET' are case-equivalent.
+    wb.remove(wb.active)
+    ws = wb.create_sheet('SHEET')
+
+    headers = [
+        'BrokerCode', 'Dummy', 'SecurityCode', 'Exchange',
+        'TransactionType', 'TransactionDate', 'SettlementDate',
+        'Quantity', 'Price', 'BrokeragePerShare', 'ServiceTaxPerShare',
+        'SettlementFlag', 'MarketRate', 'CashSymbolcode', 'BlockFlag',
+        'SecurityTransactionTax', 'AccruedInterestPerUnit',
+        'MapinID', 'Renarks', 'CashsettlementDate', 'StampDuty',
+    ]
+
+    hdr_font = _XFont(bold=True, color='FFFFFF', name='Calibri', size=10)
+    hdr_fill = _XFill('solid', fgColor='1B2A4A')
+    hdr_align = _XAlign(horizontal='center')
+    thin = _XSide(style='thin', color='D0D5DE')
+    hdr_border = _XBorder(left=thin, right=thin, top=thin, bottom=thin)
+
+    for c, h in enumerate(headers, 1):
+        cell = ws.cell(1, c, h)
+        cell.font = hdr_font
+        cell.fill = hdr_fill
+        cell.alignment = hdr_align
+        cell.border = hdr_border
+
+    def _parse_date(date_str):
+        if not date_str or not str(date_str).strip():
+            return None
+        for fmt in ('%d/%m/%Y', '%Y-%m-%d', '%d-%m-%Y'):
+            try:
+                return _ddt.strptime(str(date_str).strip(), fmt)
+            except (ValueError, AttributeError):
+                continue
+        return None
+
+    for r_idx, row in enumerate(rows, 2):
+        trans_date = _parse_date(row.transaction_date)
+        settle_date = _parse_date(row.settlement_date)
+        cash_settle = _parse_date(row.cash_settlement_date)
+
+        ws.cell(r_idx, 1,  row.broker_code)                 # A BrokerCode
+        ws.cell(r_idx, 2,  None)                            # B Dummy
+        ws.cell(r_idx, 3,  row.security_code)               # C SecurityCode
+        ws.cell(r_idx, 4,  row.exchange)                    # D Exchange
+        ws.cell(r_idx, 5,  row.transaction_type)            # E TransactionType
+        ws.cell(r_idx, 6,  trans_date)                      # F TransactionDate
+        ws.cell(r_idx, 7,  settle_date)                     # G SettlementDate
+        ws.cell(r_idx, 8,  row.quantity)                    # H Quantity
+        ws.cell(r_idx, 9,  row.price)                       # I Price
+        ws.cell(r_idx, 10, row.brokerage_per_share)         # J BrokeragePerShare
+        ws.cell(r_idx, 11, 0)                               # K ServiceTaxPerShare
+        ws.cell(r_idx, 12, row.settlement_flag)             # L SettlementFlag
+        ws.cell(r_idx, 13, row.market_rate)                 # M MarketRate
+        ws.cell(r_idx, 14, row.cash_symbol)                 # N CashSymbolcode
+        ws.cell(r_idx, 15, row.block_flag)                  # O BlockFlag
+        ws.cell(r_idx, 16, row.stt)                         # P SecurityTransactionTax
+        ws.cell(r_idx, 17, row.accrued_interest)            # Q AccruedInterestPerUnit
+        ws.cell(r_idx, 18, row.mapin_id)                    # R MapinID
+        ws.cell(r_idx, 19, row.remarks or None)             # S Renarks
+        ws.cell(r_idx, 20, cash_settle)                     # T CashsettlementDate
+        ws.cell(r_idx, 21, None)                            # U StampDuty
+
+        for col in (6, 7, 20):
+            c = ws.cell(r_idx, col)
+            if c.value is not None:
+                c.number_format = 'DD/MM/YYYY'
+
+    ws.freeze_panes = 'A2'
+    wb.save(out_path)
+    logger.info(f"0096 xlsx file written: {out_path} ({len(rows)} rows)")
+
+
 def write_trade_recon_report(summary: TradeReconSummary, out_path: str):
     """Write the full trade reconciliation report as Excel (multiple sheets)."""
     wb = openpyxl.Workbook()
