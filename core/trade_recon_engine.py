@@ -1807,19 +1807,32 @@ def write_trade_recon_report(summary: TradeReconSummary, out_path: str):
 # ── Helpers ───────────────────────────────────────────────────────────────── #
 
 def _add_working_days(date_str: str, n: int) -> str:
-    """Add n working days to DD/MM/YYYY date string."""
+    """Add n working days to a date string, returning DD/MM/YYYY.
+
+    Accepts DD/MM/YYYY, YYYY-MM-DD, and DD-MM-YYYY input formats — the
+    same set that _serial() in write_0096_excel accepts. Previously
+    only DD/MM/YYYY was accepted, which silently dropped the
+    Settlement Date column when contract notes used ISO format,
+    causing WS to NPE on upload (empty cell parse).
+    """
     if not date_str:
         return ''
-    try:
-        dt = datetime.strptime(date_str, '%d/%m/%Y')
-        added = 0
-        while added < n:
-            dt += timedelta(days=1)
-            if dt.weekday() < 5:  # Mon-Fri
-                added += 1
-        return dt.strftime('%d/%m/%Y')
-    except ValueError:
+    s = str(date_str).strip()
+    dt = None
+    for fmt in ('%d/%m/%Y', '%Y-%m-%d', '%d-%m-%Y'):
+        try:
+            dt = datetime.strptime(s, fmt)
+            break
+        except ValueError:
+            continue
+    if dt is None:
         return ''
+    added = 0
+    while added < n:
+        dt += timedelta(days=1)
+        if dt.weekday() < 5:  # Mon-Fri
+            added += 1
+    return dt.strftime('%d/%m/%Y')
 
 
 import re

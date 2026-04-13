@@ -311,13 +311,31 @@ def upload_0096(file_path: str, progress_cb=None, config_dir: Path = None) -> Up
     if progress_cb:
         progress_cb("done", "Upload complete")
 
+    # True duplicate carries a real posting_id (non-zero integer string).
+    # A false success — WS mapper crashed before any row was posted — has
+    # posting_id='0' or empty AND a NullPointerException in error_details.
+    is_true_duplicate = (
+        was_dup
+        and total == 0
+        and processed == 0
+        and posting_id
+        and posting_id != "0"
+    )
+    if is_true_duplicate:
+        return UploadResult(
+            True,
+            f"Re-upload: 0 new records (file was already posted) — Posting ID: {posting_id}",
+            "duplicate",
+        )
+
+    # False success: WS hit a mapper exception and posted nothing. Surface
+    # the real error to the caller instead of silently claiming duplicate.
     if was_dup and total == 0 and processed == 0:
-        # Known WS quirk: re-uploading an already-posted file yields 0 records
-        # and often a NullPointerException parsing error. Not a real failure.
-        msg = "Re-upload: 0 new records (file was already posted)"
-        if posting_id:
-            msg += f" — Posting ID: {posting_id}"
-        return UploadResult(True, msg, "duplicate")
+        return UploadResult(
+            False,
+            f"WS rejected the file (0 rows processed). Mapper error: {error_det[:200]}",
+            error_det,
+        )
 
     if parse_err > 0 or val_err > 0:
         msg = (f"Uploaded with errors: {processed} processed, "
