@@ -49,179 +49,6 @@ def upload_creds_configured() -> bool:
     return bool(_upload_user() and _upload_pass())
 
 
-# ── LibreOffice resave (fixes POI BIFF rejection) ───────────────────────────
-
-def _find_soffice() -> str:
-    """Locate LibreOffice's headless binary. Returns '' if not found.
-
-    Keystone runs on customer Windows machines where LibreOffice is the
-    most common conversion tool. Also checks common Linux paths for
-    completeness.
-    """
-    import shutil as _shutil
-    # Explicit override
-    override = os.environ.get("KEYSTONE_SOFFICE", "")
-    if override and Path(override).exists():
-        return override
-    # PATH search (works on both Windows and Linux)
-    found = _shutil.which("soffice") or _shutil.which("soffice.bin")
-    if found:
-        return found
-    # Common Windows install locations
-    for p in (r"C:\Program Files\LibreOffice\program\soffice.exe",
-              r"C:\Program Files (x86)\LibreOffice\program\soffice.exe"):
-        if Path(p).exists():
-            return p
-    # Common Linux install locations
-    for p in ("/usr/bin/soffice", "/usr/lib/libreoffice/program/soffice",
-              "/opt/libreoffice/program/soffice"):
-        if Path(p).exists():
-            return p
-    return ""
-
-
-def _resave_xls_via_excel_com(xls_path: str) -> bool:
-    """Re-save an xls file through Microsoft Excel via win32com.client.
-
-    Windows-only. Succeeds only if Excel is installed on the agent
-    machine. Returns True on success, False otherwise.
-
-    Excel save formats of interest:
-      xlExcel8 = 56  → 97-2003 .xls (BIFF8) — what WS wants
-    """
-    import sys
-    if sys.platform != "win32":
-        return False
-    try:
-        import win32com.client  # pywin32
-        import pythoncom
-    except ImportError:
-        return False
-
-    src = Path(xls_path).resolve()
-    if not src.exists():
-        return False
-
-    excel = None
-    wb = None
-    try:
-        # Initialize COM for this thread (Flask/uvicorn worker threads
-        # don't auto-init COM)
-        pythoncom.CoInitialize()
-        excel = win32com.client.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
-        # Open, immediately re-save in xlExcel8 format (56), close
-        wb = excel.Workbooks.Open(str(src), ReadOnly=False, UpdateLinks=0)
-        wb.SaveAs(str(src), FileFormat=56)
-        wb.Close(SaveChanges=False)
-        wb = None
-        log.info(
-            f"_resave_xls_via_excel_com: replaced {src.name} "
-            f"({src.stat().st_size} bytes) with Excel-saved version"
-        )
-        return True
-    except Exception as e:
-        log.warning(f"_resave_xls_via_excel_com: {type(e).__name__}: {e}")
-        return False
-    finally:
-        try:
-            if wb is not None:
-                wb.Close(SaveChanges=False)
-        except Exception:
-            pass
-        try:
-            if excel is not None:
-                excel.Quit()
-        except Exception:
-            pass
-        try:
-            pythoncom.CoUninitialize()
-        except Exception:
-            pass
-
-
-def _resave_xls_via_soffice(xls_path: str) -> str:
-    """Re-save an xls file so its BIFF record set matches what Apache POI
-    expects. Returns the path to the re-saved file (same path; the
-    original is replaced in place).
-
-    xlwt produces a minimal BIFF8 stream that WS's Apache POI-based
-    trade-posting mapper rejects with NullPointerException. A full
-    Excel-compatible writer is needed to fill in the optional records
-    POI requires.
-
-    Strategy (first-available wins):
-      1. LibreOffice headless — cross-platform, free
-      2. Microsoft Excel via win32com.client — Windows-only, requires
-         Excel installed on the agent machine
-
-    If neither is available, logs a warning and returns the original
-    path unchanged. On Windows, install LibreOffice from
-    https://www.libreoffice.org/download/ OR have Microsoft Excel
-    installed — the uploader will automatically pick whichever is
-    present.
-    """
-    import subprocess as _sp
-    import tempfile as _tmp
-    import shutil as _shutil
-
-    src = Path(xls_path)
-    if not src.exists():
-        return xls_path
-
-    # Tier 1: LibreOffice
-    soffice = _find_soffice()
-    if soffice:
-        with _tmp.TemporaryDirectory(prefix="soffice_resave_") as tdir:
-            staging_in = Path(tdir) / src.name
-            _shutil.copy2(src, staging_in)
-
-            cmd = [
-                soffice,
-                "--headless",
-                "--convert-to", "xls",
-                "--outdir", tdir,
-                str(staging_in),
-            ]
-            try:
-                r = _sp.run(cmd, capture_output=True, timeout=120, text=True)
-            except Exception as e:
-                log.warning(f"_resave_xls_via_soffice: soffice invocation failed: {e}")
-                r = None
-
-            if r is not None and r.returncode == 0:
-                out_candidates = list(Path(tdir).glob("*.xls"))
-                out_candidates = [p for p in out_candidates if p != staging_in]
-                if out_candidates:
-                    _shutil.copy2(out_candidates[0], src)
-                    log.info(
-                        f"_resave_xls_via_soffice: replaced {src.name} "
-                        f"({src.stat().st_size} bytes) with LibreOffice-saved "
-                        f"version"
-                    )
-                    return str(src)
-                log.warning("_resave_xls_via_soffice: no converted file produced")
-            elif r is not None:
-                log.warning(
-                    f"_resave_xls_via_soffice: soffice returned {r.returncode}; "
-                    f"stdout={r.stdout[:300]!r}  stderr={r.stderr[:300]!r}"
-                )
-
-    # Tier 2: Microsoft Excel via win32com (Windows + Excel installed)
-    if _resave_xls_via_excel_com(str(src)):
-        return str(src)
-
-    log.warning(
-        "_resave_xls_via_soffice: no working xls re-save backend. The raw "
-        "xlwt 0096 will be uploaded as-is and WS will likely reject it with "
-        "NullPointerException. Install LibreOffice from libreoffice.org/"
-        "download OR ensure Microsoft Excel is installed on this machine. "
-        "Set KEYSTONE_SOFFICE to override the LibreOffice binary path."
-    )
-    return xls_path
-
-
 # ── Login (reuse ws_downloader's AES login, but with upload creds) ───────────
 
 def _login_upload(session: _requests.Session, auth_cache: Path) -> None:
@@ -323,8 +150,14 @@ def _parse_posting_result(html: str) -> dict:
 
 # ── 0096 Upload ──────────────────────────────────────────────────────────────
 
-UPLOAD_FORM_URL = "redirect.do?target=queryTradePosting&scope=*&cmScope=*&menuDisp=N"
+# Block Deals upload — GET the file picker page, then POST file to its
+# action (queryTradePostingMap), then POST queryTradePosting.do twice
+# (mode=checkDuplicateFile, then mode=errorPage to actually run the
+# mapper). Validated against a HAR capture of a working browser upload.
+UPLOAD_FORM_URL = "redirect.do?target=queryTradePosting&blockflag=Y&scope=*&cmScope=*&consolidation=C&srcMenuId=1448"
 MAP_ID_0096 = "96"
+MAPPER_SOURCE_0096 = "spectrum_blocktrades_map"
+MAPPER_FORMAT_0096 = "dd/MM/yyyy"
 
 
 def upload_0096(file_path: str, progress_cb=None, config_dir: Path = None) -> UploadResult:
@@ -341,15 +174,6 @@ def upload_0096(file_path: str, progress_cb=None, config_dir: Path = None) -> Up
     fpath = Path(file_path)
     if not fpath.exists():
         return UploadResult(False, f"File not found: {fpath}")
-
-    # Re-save through LibreOffice so the BIFF record set matches what
-    # Apache POI expects. Subprocess bounded to 120s; in practice a
-    # 4-row file converts in <5s. No-op with warning when soffice is
-    # not installed.
-    if fpath.suffix.lower() == ".xls":
-        if progress_cb:
-            progress_cb("resave", "Re-saving via LibreOffice for POI compatibility...")
-        _resave_xls_via_soffice(str(fpath))
 
     base = _base_url()
     if config_dir is None:
@@ -420,58 +244,79 @@ def upload_0096(file_path: str, progress_cb=None, config_dir: Path = None) -> Up
 
     log.info(f"Step 2 OK — tempfile={fields2.get('tempfile')}")
 
-    # ── Step 3a: Duplicate check ─────────────────────────────────────────
+    # Pre-build the mapper field bag the way the page's JS would when
+    # the operator picks mapid=96. Overwrites scraped empty values; drops
+    # the brkchgFlag checkbox (browsers omit unchecked checkboxes).
+    def _mapper_fields(fields: dict, mode: str, action_str: str,
+                       include_buttons: bool) -> dict:
+        out = {k: v for k, v in fields.items() if k != "brkchgFlag"}
+        out["mapid"]           = MAP_ID_0096
+        out["mode"]            = mode
+        out["actionString"]    = action_str
+        out["source"]          = MAPPER_SOURCE_0096
+        out["format"]          = MAPPER_FORMAT_0096
+        out["refreshContent"]  = "call"
+        out["blockflag"]       = "Y"
+        out["srcMenuId"]       = "1448"
+        if not out.get("firmid"):
+            out["firmid"] = "0"
+        tf = out.get("tempfile") or fpath.name
+        out["file"] = tf
+        if include_buttons:
+            out["temp"]  = "Submit"
+            out["reset"] = "Reset"
+        else:
+            out.pop("temp", None)
+            out.pop("reset", None)
+        return out
+
+    map_page_url = f"{base}/redirect.do?target=queryTradePostingMap&blockflag=Y&menuDisp=Y&srcMenuId=1448"
+
+    # ── Step 3a: Duplicate check (mode=checkDuplicateFile) ───────────────
     if progress_cb:
         progress_cb("checking", "Checking for duplicates...")
 
-    fields2["mapid"] = MAP_ID_0096
-    fields2["mode"] = "checkDuplicateFile"
-    fields2["actionString"] = ""
-
+    dup_check_fields = _mapper_fields(fields2, "checkDuplicateFile", "",
+                                       include_buttons=True)
     exec_url = f"{base}/queryTradePosting.do"
     try:
-        r3a = session.post(exec_url, data=fields2, timeout=60,
-                           headers={"Referer": post_url})
+        r3a = session.post(exec_url, data=dup_check_fields, timeout=60,
+                           headers={"Referer": map_page_url})
         r3a.raise_for_status()
     except Exception as e:
         return UploadResult(False, f"Duplicate check failed: {e}")
 
-    # The AJAX response updates the actionString hidden field.
-    # Parse the response to find the actionString value.
     dup_fields = _scrape_all_inputs(r3a.text)
     action_str = dup_fields.get("actionString", "")
-
-    # Also check the raw text in case it's a partial HTML snippet
     if not action_str:
         m = re.search(r'name=["\']actionString["\'].*?value=["\']([^"\']*)', r3a.text)
         if m:
             action_str = m.group(1)
-
     log.info(f"Step 3a — actionString={action_str!r}")
 
     if action_str == "nextWithCancel":
         return UploadResult(False,
                             "WS rejected: file already uploaded and duplicates are not allowed for this map")
 
-    # "next" = no duplicate, "nextWithOKContinue" = duplicate but allowed to proceed
-    if action_str not in ("next", "nextWithOKContinue", ""):
-        log.warning(f"Unexpected actionString: {action_str!r} — proceeding anyway")
+    effective_action = action_str if action_str in ("next", "nextWithOKContinue") else "nextWithOKContinue"
 
-    # ── Step 3b: Execute posting ─────────────────────────────────────────
+    # ── Step 3b: Run the mapper (mode=errorPage) ─────────────────────────
+    # POST queryTradePosting.do with mode=errorPage. The page's JS calls
+    # this synchronously via retrieveURLForExeNWait() — the response IS
+    # the posting result HTML with Total/Processed/Validation/Parsing
+    # counts. The wait-page UI navigation is a visual wrapper that
+    # refetches the same data; we skip it.
     if progress_cb:
-        progress_cb("posting", "Posting transactions...")
+        progress_cb("posting", "Running mapper...")
 
-    # Refresh fields from the duplicate check response (may have new CSRF)
-    exec_fields = _scrape_all_inputs(r3a.text) if dup_fields else dict(fields2)
-    exec_fields["mapid"] = MAP_ID_0096
-    exec_fields["mode"] = "errorPage"
-    # The JS submits to a wait page, but the actual POST goes to the same .do
+    exec_fields = _mapper_fields(fields2, "errorPage", effective_action,
+                                  include_buttons=False)
     try:
         r3b = session.post(exec_url, data=exec_fields, timeout=180,
-                           headers={"Referer": post_url})
+                           headers={"Referer": map_page_url})
         r3b.raise_for_status()
     except Exception as e:
-        return UploadResult(False, f"Posting execution failed: {e}")
+        return UploadResult(False, f"Mapper run failed: {e}")
 
     # Parse result — WS returns a table with labelled rows
     counts = _parse_posting_result(r3b.text)
@@ -519,8 +364,22 @@ def upload_0096(file_path: str, progress_cb=None, config_dir: Path = None) -> Up
             error_det,
         )
 
-    if parse_err > 0 or val_err > 0:
-        msg = (f"Uploaded with errors: {processed} processed, "
+    # Partial success: some records posted, some had row-level errors.
+    # WS still considers this a successful upload.
+    if processed > 0:
+        msg = f"{processed} of {total} records posted"
+        if val_err > 0 or parse_err > 0:
+            parts = []
+            if val_err > 0:  parts.append(f"{val_err} validation")
+            if parse_err > 0: parts.append(f"{parse_err} parsing")
+            msg += f" ({', '.join(parts)} error{'s' if (val_err+parse_err)>1 else ''})"
+        if posting_id:
+            msg += f" — Posting ID: {posting_id}"
+        return UploadResult(True, msg, error_det)
+
+    # Hard failure: nothing posted, only errors
+    if val_err > 0 or parse_err > 0:
+        msg = (f"WS rejected the file: 0 processed, "
                f"{val_err} validation errors, {parse_err} parsing errors")
         return UploadResult(False, msg, error_det)
 

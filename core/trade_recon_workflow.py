@@ -225,7 +225,7 @@ def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
     from parsers.broker_pdf    import BrokerPDFParser, ContractNote as _CN
     from parsers.nsdl_steady   import NSDLParser
     from parsers.exchange_file import ExchangeFileParser
-    from core.trade_recon_engine import TradeReconEngine, write_trade_recon_report, write_0096_xlsx
+    from core.trade_recon_engine import TradeReconEngine, write_trade_recon_report, write_0096_excel
     from core.client_bank_details import ClientBankDetails
 
     engine = TradeReconEngine(broker_map, pool_map_dict)
@@ -546,13 +546,15 @@ def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
     date_fmt = date_str.replace('-', '')
 
     recon_path = os.path.join(out_dir, f'TradeRecon_{date_fmt}_{ts}.xlsx')
-    # WS's Java mapper (Apache POI) rejects xlwt's minimal BIFF8 output
-    # with NullPointerException. openpyxl-generated .xlsx files are
-    # read natively by POI's WorkbookFactory without issue.
-    xlsx_0096  = os.path.join(out_dir, f'0096_{date_fmt}_{ts}.xlsx')
+    # WS specifically wants 97-2003 .xls (xlsx is rejected). xlwt's
+    # minimal BIFF8 output is what we ship; a downstream post-processor
+    # (LibreOffice headless, on Azure) should re-save it to fill in the
+    # optional BIFF records that Apache POI expects. write_0096_xlsx is
+    # kept in the engine module as a dormant alternative.
+    xlsx_0096  = os.path.join(out_dir, f'0096_{date_fmt}_{ts}.xls')
 
     write_trade_recon_report(summary, recon_path)
-    write_0096_xlsx(summary.output_0096, xlsx_0096, date_str)
+    write_0096_excel(summary.output_0096, xlsx_0096, date_str)
 
     log_fn(f"Trade recon complete — C1:{summary.c1_breaks} C2:{summary.c2_breaks} "
            f"C3:{summary.c3_breaks} breaks | 0096: {len(summary.output_0096)} rows")
