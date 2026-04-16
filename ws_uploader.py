@@ -443,13 +443,20 @@ def _involved_mapins_by_custodian(date_str: str,
     hub = json.loads(hub_path.read_text())
     mapin_to_cust: dict[str, str] = {}
     mapin_to_strategy: dict[str, str] = {}
+    alias_to_canonical: dict[str, str] = {}
     for pool in hub.get("pools", []):
         mapin = (pool.get("mapin") or "").strip()
         cust  = (pool.get("custodian_bank") or "").strip().upper()
         name  = (pool.get("display_name") or pool.get("pool_id") or mapin)
         if mapin and cust:
-            mapin_to_cust[mapin] = cust
-            mapin_to_strategy[mapin] = name
+            mapin_to_cust[mapin.upper()] = cust
+            mapin_to_strategy[mapin.upper()] = name
+            alias_to_canonical[mapin.upper()] = mapin
+        for alias in pool.get("broker_cn_aliases", []) or []:
+            a = (alias.get("mapin") if isinstance(alias, dict) else alias) or ""
+            a = str(a).strip().upper()
+            if a and mapin:
+                alias_to_canonical[a] = mapin
 
     # Find the 0096 file — either passed explicitly or search output dir
     fpath = None
@@ -500,10 +507,19 @@ def _involved_mapins_by_custodian(date_str: str,
         return {}
 
     result: dict = defaultdict(list)
-    for m in mapins_in_file:
-        c = mapin_to_cust.get(m)
+    seen: set = set()
+    for raw in mapins_in_file:
+        canonical = alias_to_canonical.get(raw.upper(), raw)
+        key = canonical.upper()
+        if key in seen:
+            continue
+        c = mapin_to_cust.get(key)
         if c:
-            result[c].append({"mapin": m, "strategy": mapin_to_strategy.get(m, m)})
+            seen.add(key)
+            result[c].append({"mapin": canonical, "strategy": mapin_to_strategy.get(key, canonical)})
+        else:
+            log.warning("_involved_mapins_by_custodian: mapin %r (from 0096 row %r) "
+                        "not mapped to any custodian — skipping", canonical, raw)
 
     return dict(result)
 
