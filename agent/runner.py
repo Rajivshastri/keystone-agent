@@ -94,13 +94,28 @@ class _LogCollector:
         return filter_log_lines(self._entries)
 
 
+def _default_recon_date() -> str:
+    """Return the business date for reconciliation: T-1 before 15:30 IST, T after.
+
+    Markets close at 15:30 IST; custodian files land after close.
+    Before that cutoff the most recent complete data set is yesterday's.
+    """
+    from datetime import timedelta
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(ist)
+    cutoff = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
+    if now_ist < cutoff:
+        return (now_ist - timedelta(days=1)).strftime("%Y-%m-%d")
+    return now_ist.strftime("%Y-%m-%d")
+
+
 def _job_date(job: PollJob, default_today: bool = True) -> str:
     """Extract the YYYY-MM-DD recon date from a job payload."""
     date = job.payload.get("date")
     if isinstance(date, str) and len(date) == 10:
         return date
     if default_today:
-        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        return _default_recon_date()
     raise ValueError(f"Job {job.id} missing 'date' in payload")
 
 
