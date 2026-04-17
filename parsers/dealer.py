@@ -22,6 +22,28 @@ from typing import List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _round_price_4dp(x) -> float:
+    """Canonically round a price to 4 decimals using HALF_UP (schoolbook)
+    rounding. All prices on DealerTrade are stored rounded so downstream
+    equality comparisons work without any further rounding.
+
+    Uses Decimal(str(float(x))) to bypass binary-FP artifacts that
+    otherwise cause Python's built-in round() to give 982.0717 for
+    the literal 982.07175.
+    """
+    if x is None:
+        return 0.0
+    try:
+        from decimal import Decimal, ROUND_HALF_UP
+        return float(Decimal(str(float(x))).quantize(
+            Decimal('0.0001'), rounding=ROUND_HALF_UP))
+    except Exception:
+        try:
+            return round(float(x), 4)
+        except Exception:
+            return 0.0
+
+
 @dataclass
 class DealerTrade:
     create_time:  str
@@ -163,9 +185,12 @@ class DealerParser:
                 name        = str(get(row, 'name', '') or '').strip(),
                 security    = str(get(row, 'security', '') or '').strip(),
                 qty         = flt(get(row, 'qty', 0)),
-                lmt_px      = flt(get(row, 'lmt_px', 0)),
+                # Prices always stored rounded HALF_UP to 4dp.
+                # Dealer grid can carry 5dp values (e.g. 982.07175) that
+                # must match CN's 4dp (982.0718) after rounding.
+                lmt_px      = _round_price_4dp(flt(get(row, 'lmt_px', 0))),
                 fill_qty    = flt(get(row, 'fill_qty', 0)),
-                avg_px      = flt(get(row, 'avg_px', 0)),
+                avg_px      = _round_price_4dp(flt(get(row, 'avg_px', 0))),
                 isin        = isin,
                 trade_date  = trade_date,
             )
