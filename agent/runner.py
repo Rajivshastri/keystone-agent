@@ -1841,24 +1841,33 @@ def _cmd_master_client_list(payload: dict[str, Any]) -> CommandResult:
     """Return the merged client master (WS Z30 + local extras).
 
     Payload:
-        refresh: optional bool — force WS re-download, bypass cache
+        mode: "load" | "fetch" | "cache" (default "load")
+              load  = parse latest Z30 on disk
+              fetch = download fresh from WS then parse
+              cache = in-memory cache within TTL, else load
     """
     try:
         from core.masters_service import get_client_master
     except Exception as e:
         return CommandResult.failure(f"masters_service import failed: {e}")
 
-    refresh = bool(payload.get("refresh", False))
+    mode = str(payload.get("mode") or "load").lower()
+    if mode not in ("load", "fetch", "cache"):
+        mode = "load"
+
     try:
-        data = get_client_master(refresh=refresh)
+        data = get_client_master(mode=mode)
     except Exception as e:
         logger.exception("master_client_list failed")
         return CommandResult.failure(f"{type(e).__name__}: {e}")
+
+    if data.get("error"):
+        return CommandResult.failure(data["error"])
 
     return CommandResult.success({
         "rows": data.get("rows", []),
         "row_count": len(data.get("rows", [])),
         "fetched_at": data.get("fetched_at"),
         "source_file": data.get("source_file"),
-        "from_cache": data.get("from_cache", False),
+        "mode": data.get("mode", mode),
     })

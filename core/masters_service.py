@@ -227,38 +227,53 @@ def _load_local_extras() -> dict[tuple[str, str], dict[str, Any]]:
         return {}
 
 
-def get_client_master(refresh: bool = False) -> dict[str, Any]:
+def get_client_master(mode: str = "load") -> dict[str, Any]:
     """Return the merged client master view.
 
-    refresh=True bypasses the cache and forces a WS re-download.
+    mode:
+      "load"  — parse the latest Z30_ClientDetail XLS already on disk
+                (usually written by the most recent trade recon run).
+                Returns an error result if no file exists.
+      "fetch" — download a fresh Z30_ClientDetail from WS, then parse.
+      "cache" — return the in-memory cache if within TTL, else behave
+                like "load". Used by repeated UI reads.
 
     Returns:
       {
         "rows": [ ...merged dicts... ],
-        "fetched_at": <iso timestamp>,
+        "fetched_at": <epoch seconds>,
         "source_file": "/path/to/Z30_ClientDetail.xls" or None,
+        "mode": "load" | "fetch" | "cache",
+        "error": "..." (only on failure),
       }
     """
     global _client_cache
     now = time.time()
 
-    if not refresh and _client_cache is not None:
+    if mode == "cache" and _client_cache is not None:
         if (now - _client_cache.fetched_at) < CACHE_TTL_SECONDS:
             return {
                 "rows": _client_cache.rows,
                 "fetched_at": _client_cache.fetched_at,
-                "from_cache": True,
+                "mode": "cache",
+                "source_file": None,
             }
+        mode = "load"
 
-    z30_path = _find_latest_z30_client_detail() if not refresh else None
-    if refresh or z30_path is None:
-        log.info("Downloading fresh Z30_ClientDetail from WS")
+    if mode == "fetch":
+        log.info("get_client_master(fetch): downloading fresh Z30_ClientDetail from WS")
         z30_path = _download_z30_client_detail()
-
-    if z30_path is None:
-        log.error("No Z30_ClientDetail available — returning empty master")
-        return {"rows": [], "fetched_at": now, "source_file": None,
-                "error": "Z30_ClientDetail unavailable"}
+        if z30_path is None:
+            return {"rows": [], "fetched_at": now, "source_file": None,
+                    "mode": "fetch",
+                    "error": "WS download failed — check credentials and network"}
+    else:  # load
+        z30_path = _find_latest_z30_client_detail()
+        if z30_path is None:
+            return {"rows": [], "fetched_at": now, "source_file": None,
+                    "mode": "load",
+                    "error": "No Z30_ClientDetail file found on disk — "
+                             "run trade recon first, or click Fetch to download"}
 
     ws_rows = _parse_z30_client_detail(z30_path)
     extras = _load_local_extras()
@@ -277,7 +292,7 @@ def get_client_master(refresh: bool = False) -> dict[str, Any]:
         "rows": merged,
         "fetched_at": now,
         "source_file": str(z30_path),
-        "from_cache": False,
+        "mode": mode,
     }
 
 
