@@ -27,7 +27,7 @@ from parsers.exchange_file import ExchangeTrade
 
 logger = logging.getLogger(__name__)
 
-PRICE_TOLERANCE = 0.0001 # tolerance for price matching (match to 4 decimal places)
+PRICE_TOLERANCE = 0.0   # zero tolerance — prices must match exactly (to 4dp)
 
 
 # ── Result data classes ───────────────────────────────────────────────────── #
@@ -759,7 +759,7 @@ class TradeReconEngine:
 
             cn_wap      = round(cn_wap_sum / total_cn_qty, 4) if total_cn_qty > 0 else 0.0
             qty_match   = abs(total_cn_qty - dt.fill_qty) <= 0.01
-            price_match = abs(cn_wap - dt.avg_px) <= PRICE_TOLERANCE
+            price_match = round(cn_wap, 4) == round(dt.avg_px, 4)
 
             if qty_match and price_match:
                 status = 'MATCH'
