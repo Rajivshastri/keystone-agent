@@ -62,7 +62,9 @@ class AgentSettings:
     machine_fingerprint: str = ""
 
     # Polling cadence (seconds). Server can override via health response.
-    poll_interval_seconds: int = 60
+    # 3s default so interactive dashboard actions (master Load/Fetch,
+    # break detail) feel responsive.
+    poll_interval_seconds: int = 3
 
     # Friendly name shown in the control plane
     agent_name: str = ""
