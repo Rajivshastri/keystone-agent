@@ -16,4 +16,14 @@ Modules:
   main      — foreground entry point (uvicorn + poll loop for dev)
 """
 
-__version__ = "0.1.0"
+_BASE_VERSION = "0.1.0"
+
+try:
+    from ._build import GIT_SHA as _GIT_SHA, BUILT_AT as _BUILT_AT
+except Exception:
+    _GIT_SHA = "dev"
+    _BUILT_AT = "dev"
+
+__version__ = f"{_BASE_VERSION}+{_GIT_SHA[:7]}" if _GIT_SHA and _GIT_SHA != "dev" else f"{_BASE_VERSION}+dev"
+__git_sha__ = _GIT_SHA
+__built_at__ = _BUILT_AT
