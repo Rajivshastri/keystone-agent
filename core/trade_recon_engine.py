@@ -530,12 +530,15 @@ class TradeReconEngine:
 
             qty_diff = round(ws_qty - fill_qty, 4)
 
-            # Price breach check — only when dealer placed a limit order
+            # Price breach check — only when dealer placed a limit order.
+            # Compare 4dp-rounded values to avoid FP-artifact false breaches.
             price_breach = False
             if not is_mkt and lmt_px > 0 and avg_px > 0:
-                if side == 'Buy'  and avg_px > lmt_px + PRICE_TOLERANCE:
+                _avg = _round_price(avg_px)
+                _lmt = _round_price(lmt_px)
+                if side == 'Buy'  and _avg > _lmt:
                     price_breach = True
-                if side == 'Sell' and avg_px < lmt_px - PRICE_TOLERANCE:
+                if side == 'Sell' and _avg < _lmt:
                     price_breach = True
 
             # Status
@@ -1456,7 +1459,7 @@ class TradeReconEngine:
 
         for (isin, side), d in sorted(cn_agg.items()):
             d_qty = d['qty']
-            d_px  = round(d['value'] / d_qty, 4) if d_qty > 0 else 0.0
+            d_px  = _round_price(d['value'] / d_qty) if d_qty > 0 else 0.0
             d_sec = d['security']
 
             # Pass 1: direct key lookup (works when resolution succeeded)
@@ -1550,11 +1553,13 @@ class TradeReconEngine:
                             break
 
             e_qty = e.get('qty', 0.0)
-            e_px  = round(e.get('value', 0.0) / e_qty, 4) if e_qty > 0 else 0.0
+            e_px  = _round_price(e.get('value', 0.0) / e_qty) if e_qty > 0 else 0.0
             e_sec = e.get('security', '') or d_sec
 
             qty_diff   = round(d_qty - e_qty, 4)
-            price_diff = round(d_px  - e_px,  4)
+            # price_diff computed from 4dp-rounded inputs; value used for
+            # display but zero-tolerance comparisons below treat it as exact.
+            price_diff = _round_price(d_px - e_px)
 
             if   e_qty == 0:                                               status = 'CN_ONLY'
             elif d_qty == 0:                                               status = 'EXCHANGE_ONLY'
@@ -1586,7 +1591,7 @@ class TradeReconEngine:
             if e_isin and any(r.isin == e_isin and r.side == eside for r in results):
                 continue   # already covered by a dealer-side row above
             e_qty = e.get('qty', 0.0)
-            e_px  = round(e.get('value', 0.0) / e_qty, 4) if e_qty > 0 else 0.0
+            e_px  = _round_price(e.get('value', 0.0) / e_qty) if e_qty > 0 else 0.0
             results.append(Check5Result(
                 security=e.get('security', ekey), isin=e_isin or ekey, side=eside,
                 exchange=exchange_name,
