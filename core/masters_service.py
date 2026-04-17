@@ -84,6 +84,31 @@ def _workdir() -> Path:
     return Path(base)
 
 
+def _ws_credentials() -> tuple[str, str]:
+    """Read (ws_user, ws_pass) from the agent's stored settings.
+
+    Falls back to FINCRM_USER / FINCRM_PASS env vars when running from
+    source / dev mode without the agent settings store available.
+    """
+    # Prefer agent-managed settings (paired agent, persisted credentials)
+    try:
+        from agent.config import load_settings
+        from agent.secrets import KEY_WS_PORTAL_PASSWORD, get_store
+        from agent.setup import EK_WS_USERNAME
+
+        settings = load_settings()
+        extras = settings.extras or {}
+        user = extras.get(EK_WS_USERNAME, "").strip()
+        pwd = (get_store().get(KEY_WS_PORTAL_PASSWORD) or "").strip()
+        if user and pwd:
+            return user, pwd
+    except Exception as e:
+        log.debug(f"Agent settings unavailable, falling back to env: {e}")
+
+    return (os.environ.get("FINCRM_USER", "").strip(),
+            os.environ.get("FINCRM_PASS", "").strip())
+
+
 def _find_latest_z30_client_detail() -> Path | None:
     """Return the most recently modified Z30_ClientDetail.xls on disk.
 
@@ -110,8 +135,13 @@ def _find_latest_z30_client_detail() -> Path | None:
 def _download_z30_client_detail() -> Path | None:
     """Trigger a WS download of the Client Details master.
 
-    Uses the existing run_all_downloads with a reports filter. Returns
-    the downloaded file path, or None on failure.
+    Uses run_all_downloads with a reports_filter of just ["Client Details"].
+    Mirrors the credential-injection pattern used by _pre_reconciliation:
+    ws_downloader reads FINCRM_USER/FINCRM_PASS from the environment,
+    so we temporarily set them from the agent's stored settings before
+    the call and restore afterwards.
+
+    Returns the downloaded file path, or None on failure.
     """
     from datetime import datetime
     try:
@@ -120,6 +150,17 @@ def _download_z30_client_detail() -> Path | None:
         log.error("ws_downloader import failed — cannot download Z30_ClientDetail")
         return None
 
+    ws_user, ws_pass = _ws_credentials()
+    if not ws_user or not ws_pass:
+        log.error("WS credentials not configured — cannot download Z30_ClientDetail")
+        return None
+
+    prev = {
+        "FINCRM_USER": os.environ.get("FINCRM_USER"),
+        "FINCRM_PASS": os.environ.get("FINCRM_PASS"),
+    }
+    os.environ["FINCRM_USER"] = ws_user
+    os.environ["FINCRM_PASS"] = ws_pass
     try:
         result = _wsd.run_all_downloads(
             date_obj=datetime.now(),
@@ -129,6 +170,12 @@ def _download_z30_client_detail() -> Path | None:
     except Exception as e:
         log.exception(f"Z30 client detail download failed: {e}")
         return None
+    finally:
+        for k, v in prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
     if not result.get("success_count"):
         log.warning(f"Z30 client detail download returned no success: {result}")
