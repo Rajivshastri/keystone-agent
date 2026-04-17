@@ -27,7 +27,7 @@ from parsers.exchange_file import ExchangeTrade
 
 logger = logging.getLogger(__name__)
 
-PRICE_TOLERANCE = 0.05   # ₹ tolerance for price matching
+PRICE_TOLERANCE = 0.0001 # tolerance for price matching (match to 4 decimal places)
 
 
 # ── Result data classes ───────────────────────────────────────────────────── #
@@ -1825,7 +1825,7 @@ def write_trade_recon_report(summary: TradeReconSummary, out_path: str):
                 cell = ws.cell(r_idx, c, v)
                 cell.fill = fill; cell.border = BORD
                 if isinstance(v, float):
-                    cell.number_format = '#,##0.00'
+                    cell.number_format = '#,##0.0000'
 
     # ── Summary sheet ─────────────────────────────────────────────────────
     ws_sum = wb.active; ws_sum.title = 'Summary'
