@@ -478,6 +478,9 @@ def execute_command(cmd_kind: str, payload: dict[str, Any]) -> CommandResult:
         # P7: standing rules for agent autonomy
         if cmd_kind == "set_standing_rule":
             return _cmd_set_standing_rule(payload)
+        # Masters: on-demand WS fetch + merge with local extras
+        if cmd_kind == "master_client_list":
+            return _cmd_master_client_list(payload)
         return CommandResult.failure(f"unknown command kind: {cmd_kind!r}")
     except Exception as e:  # noqa: BLE001
         logger.exception(f"Command handler {cmd_kind!r} crashed")
@@ -1832,3 +1835,30 @@ def _run_diagnostic_bundle(job: PollJob) -> RunPush:
         reminder_count=0,
         log_lines=log.as_log_lines(),
     )
+
+
+def _cmd_master_client_list(payload: dict[str, Any]) -> CommandResult:
+    """Return the merged client master (WS Z30 + local extras).
+
+    Payload:
+        refresh: optional bool — force WS re-download, bypass cache
+    """
+    try:
+        from core.masters_service import get_client_master
+    except Exception as e:
+        return CommandResult.failure(f"masters_service import failed: {e}")
+
+    refresh = bool(payload.get("refresh", False))
+    try:
+        data = get_client_master(refresh=refresh)
+    except Exception as e:
+        logger.exception("master_client_list failed")
+        return CommandResult.failure(f"{type(e).__name__}: {e}")
+
+    return CommandResult.success({
+        "rows": data.get("rows", []),
+        "row_count": len(data.get("rows", [])),
+        "fetched_at": data.get("fetched_at"),
+        "source_file": data.get("source_file"),
+        "from_cache": data.get("from_cache", False),
+    })
