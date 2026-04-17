@@ -481,6 +481,10 @@ def execute_command(cmd_kind: str, payload: dict[str, Any]) -> CommandResult:
         # Masters: on-demand WS fetch + merge with local extras
         if cmd_kind == "master_client_list":
             return _cmd_master_client_list(payload)
+        if cmd_kind == "master_pool_list":
+            return _cmd_master_pool_list(payload)
+        if cmd_kind == "master_broker_list":
+            return _cmd_master_broker_list(payload)
         return CommandResult.failure(f"unknown command kind: {cmd_kind!r}")
     except Exception as e:  # noqa: BLE001
         logger.exception(f"Command handler {cmd_kind!r} crashed")
@@ -1900,4 +1904,64 @@ def _cmd_master_client_list(payload: dict[str, Any]) -> CommandResult:
         "fetched_at": data.get("fetched_at"),
         "source_file": data.get("source_file"),
         "mode": data.get("mode", mode),
+    })
+
+
+def _read_config_json(filename: str) -> dict[str, Any] | None:
+    """Read a JSON file from the agent's writable config dir.
+
+    Uses agent.paths.config_dir() so we always read from the seeded
+    writable snapshot (not the read-only bundle).
+    """
+    try:
+        from agent.paths import config_dir
+        path = config_dir() / filename
+        if not path.exists():
+            return None
+        import json
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning(f"Failed to read {filename}: {e}")
+        return None
+
+
+def _cmd_master_pool_list(payload: dict[str, Any]) -> CommandResult:
+    """Return the pool master (pools_hub.json, live from agent's config dir).
+
+    No WS call — this is agent-local reference data. Returns rows as-is
+    plus a synthetic row_count / source_file for consistency with the
+    other master commands.
+    """
+    hub = _read_config_json("pools_hub.json")
+    if hub is None:
+        return CommandResult.failure(
+            "pools_hub.json not found — check agent config directory"
+        )
+    pools = hub.get("pools", [])
+    return CommandResult.success({
+        "rows": pools,
+        "row_count": len(pools),
+        "fetched_at": int(datetime.now(timezone.utc).timestamp()),
+        "source_file": "pools_hub.json",
+        "mode": "local",
+    })
+
+
+def _cmd_master_broker_list(payload: dict[str, Any]) -> CommandResult:
+    """Return the broker master (broker_map.json, live from agent's config dir).
+
+    No WS call — this is agent-local reference data.
+    """
+    bm = _read_config_json("broker_map.json")
+    if bm is None:
+        return CommandResult.failure(
+            "broker_map.json not found — check agent config directory"
+        )
+    brokers = bm.get("brokers", [])
+    return CommandResult.success({
+        "rows": brokers,
+        "row_count": len(brokers),
+        "fetched_at": int(datetime.now(timezone.utc).timestamp()),
+        "source_file": "broker_map.json",
+        "mode": "local",
     })
