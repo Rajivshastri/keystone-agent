@@ -79,7 +79,20 @@ _Z30_CLIENT_COLUMNS = {
 
 
 def _workdir() -> Path:
-    """Agent workdir. Honors KEYSTONE_DATA_DIR."""
+    """Agent workdir — same place trade/holdings/bank recons write.
+
+    Resolution order:
+      1. Agent settings.workdir (authoritative — what _pre_reconciliation uses)
+      2. KEYSTONE_DATA_DIR env var (dev override)
+      3. <source repo root>       (dev fallback only)
+    """
+    try:
+        from agent.config import load_settings
+        s = load_settings()
+        if s.workdir:
+            return Path(s.workdir)
+    except Exception:
+        pass
     base = os.environ.get("KEYSTONE_DATA_DIR") or str(Path(__file__).parent.parent)
     return Path(base)
 
@@ -110,23 +123,28 @@ def _ws_credentials() -> tuple[str, str]:
 
 
 def _find_latest_z30_client_detail() -> Path | None:
-    """Return the most recently modified Z30_ClientDetail.xls on disk.
+    """Return the most recently modified ClientDetail file on disk.
 
-    Walks data/{YYYY-MM-DD}/masters/ directories. Returns None if no
-    file found — caller should trigger a download.
+    Walks data/{YYYY-MM-DD}/masters/ directories looking for files
+    matching either ``ClientDetail*.xls`` (the name WS writes when
+    downloaded via ws_downloader) or ``Z30_ClientDetail*.xls`` (the
+    historical name used by bulk-downloaded snapshots). Returns None
+    if no file found — caller should trigger a download.
     """
     data_root = _workdir() / "data"
     if not data_root.exists():
         return None
     candidates: list[Path] = []
+    patterns = ("ClientDetail*.xls", "Z30_ClientDetail*.xls")
     for date_dir in data_root.iterdir():
         if not date_dir.is_dir():
             continue
         masters_dir = date_dir / "masters"
         if not masters_dir.exists():
             continue
-        for f in masters_dir.glob("Z30_ClientDetail*.xls"):
-            candidates.append(f)
+        for pat in patterns:
+            for f in masters_dir.glob(pat):
+                candidates.append(f)
     if not candidates:
         return None
     return max(candidates, key=lambda p: p.stat().st_mtime)
