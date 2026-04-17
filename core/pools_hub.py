@@ -24,18 +24,61 @@ logger = logging.getLogger(__name__)
 
 
 class PoolsHub:
-    def __init__(self, pools: List[dict]):
+    def __init__(self, pools: List[dict], brokers: List[dict] = None):
         self._pools = pools
+        self._brokers = brokers or []
 
     # ── Loading ──────────────────────────────────────────────────────────── #
 
     @classmethod
-    def load(cls, path: str = None) -> 'PoolsHub':
+    def load(cls, path: str = None, broker_path: str = None) -> 'PoolsHub':
+        # pools_hub.json — always present, authoritative for pool records
         if path is None:
             path = Path(__file__).parent.parent / 'config' / 'pools_hub.json'
         with open(path) as f:
             data = json.load(f)
-        return cls(data.get('pools', []))
+        pools = data.get('pools', [])
+
+        # broker_map.json — now also the home of broker-side CN aliases.
+        # Optional so existing callers still work on boxes mid-migration.
+        if broker_path is None:
+            broker_path = Path(__file__).parent.parent / 'config' / 'broker_map.json'
+        brokers: List[dict] = []
+        try:
+            with open(broker_path) as f:
+                brokers = json.load(f).get('brokers', []) or []
+        except FileNotFoundError:
+            logger.info(f"broker_map.json not found at {broker_path} — aliases unavailable")
+        except Exception as e:
+            logger.warning(f"Failed to load broker_map.json: {e}")
+
+        return cls(pools, brokers)
+
+    @property
+    def brokers(self) -> List[dict]:
+        return self._brokers
+
+    def broker_pool_aliases(self) -> List[dict]:
+        """Flat list of pool aliases pulled from broker_map.json.
+
+        Each entry: {pool_id, alias_code, note, broker_dealer_code}. Rows
+        with blank alias_code are skipped — those are placeholder rows
+        the UI shows for pools the broker hasn't registered a code for.
+        """
+        out: List[dict] = []
+        for b in self._brokers:
+            dc = (b.get('dealer_code') or '').strip()
+            for a in b.get('pool_aliases', []) or []:
+                code = (a.get('alias_code') or '').strip()
+                if not code:
+                    continue
+                out.append({
+                    'pool_id': a.get('pool_id', ''),
+                    'alias_code': code,
+                    'note': a.get('note', ''),
+                    'broker_dealer_code': dc,
+                })
+        return out
 
     @property
     def pools(self) -> List[dict]:
@@ -64,16 +107,23 @@ class PoolsHub:
             if p.get('canonical_mapin'):
                 entry['canonical_mapin'] = p['canonical_mapin']
             entries.append(entry)
-            # Generate alias entries (broker_cn_aliases)
-            for alias in p.get('broker_cn_aliases', []):
-                entries.append({
-                    'dealer_account':  p.get('dealer_account', ''),
-                    'mapin':           alias['mapin'],
-                    'pool_name':       p.get('display_name', ''),
-                    'scheme_name':     p.get('custodian_code', ''),
-                    'custodian':       p.get('custodian_bank', ''),
-                    'canonical_mapin': p['mapin'],
-                })
+
+        # Broker-side pool aliases (e.g. GSWP012 → aristos_hdfc) emit one
+        # synthesized entry per alias so TradeReconEngine can resolve alt
+        # codes back to the canonical MAPIN.
+        pool_by_id = {p.get('pool_id'): p for p in self._pools if p.get('pool_id')}
+        for alias in self.broker_pool_aliases():
+            parent = pool_by_id.get(alias['pool_id'])
+            if not parent or not parent.get('mapin'):
+                continue
+            entries.append({
+                'dealer_account':  parent.get('dealer_account', ''),
+                'mapin':           alias['alias_code'],
+                'pool_name':       parent.get('display_name', ''),
+                'scheme_name':     parent.get('custodian_code', ''),
+                'custodian':       parent.get('custodian_bank', ''),
+                'canonical_mapin': parent['mapin'],
+            })
         return {'pools': entries}
 
     def mappings_dict(self) -> dict:
@@ -186,10 +236,19 @@ class PoolsHub:
         return None
 
     def canonical_mapin(self, alias_mapin: str) -> str:
-        """Resolve an alias MAPIN to its canonical MAPIN.
-        Returns alias_mapin unchanged if no alias found."""
-        for p in self._pools:
-            for alias in p.get('broker_cn_aliases', []):
-                if alias.get('mapin') == alias_mapin:
-                    return p['mapin']   # canonical is the primary pool's mapin
+        """Resolve an alias code to its canonical pool MAPIN.
+
+        Aliases now live under brokers.pool_aliases; this walks that
+        list and maps alias_code → the referenced pool's mapin.
+        Returns alias_mapin unchanged if no match.
+        """
+        target = (alias_mapin or '').upper()
+        if not target:
+            return alias_mapin
+        pool_by_id = {p.get('pool_id'): p for p in self._pools if p.get('pool_id')}
+        for alias in self.broker_pool_aliases():
+            if alias['alias_code'].upper() == target:
+                parent = pool_by_id.get(alias['pool_id'])
+                if parent and parent.get('mapin'):
+                    return parent['mapin']
         return alias_mapin

@@ -444,6 +444,7 @@ def _involved_mapins_by_custodian(date_str: str,
     mapin_to_cust: dict[str, str] = {}
     mapin_to_strategy: dict[str, str] = {}
     alias_to_canonical: dict[str, str] = {}
+    pool_id_to_mapin: dict[str, str] = {}
     for pool in hub.get("pools", []):
         mapin = (pool.get("mapin") or "").strip()
         cust  = (pool.get("custodian_bank") or "").strip().upper()
@@ -452,11 +453,26 @@ def _involved_mapins_by_custodian(date_str: str,
             mapin_to_cust[mapin.upper()] = cust
             mapin_to_strategy[mapin.upper()] = name
             alias_to_canonical[mapin.upper()] = mapin
-        for alias in pool.get("broker_cn_aliases", []) or []:
-            a = (alias.get("mapin") if isinstance(alias, dict) else alias) or ""
-            a = str(a).strip().upper()
-            if a and mapin:
-                alias_to_canonical[a] = mapin
+        pid = (pool.get("pool_id") or "").strip()
+        if pid and mapin:
+            pool_id_to_mapin[pid] = mapin
+
+    # Aliases now live on the broker side (broker.pool_aliases). Each
+    # entry is {pool_id, alias_code, note}; we resolve pool_id → mapin
+    # to keep alias_to_canonical in the same shape as before.
+    bm_path = config_dir / "broker_map.json"
+    if bm_path.exists():
+        try:
+            bm = json.loads(bm_path.read_text())
+            for broker in bm.get("brokers", []) or []:
+                for alias in broker.get("pool_aliases", []) or []:
+                    code = (alias.get("alias_code") or "").strip().upper()
+                    pid  = (alias.get("pool_id") or "").strip()
+                    canon = pool_id_to_mapin.get(pid)
+                    if code and canon:
+                        alias_to_canonical[code] = canon
+        except Exception:
+            pass
 
     # Find the 0096 file — either passed explicitly or search output dir
     fpath = None

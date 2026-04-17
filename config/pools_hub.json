@@ -183,7 +183,10 @@
       "pool_demat_account": "925020047846436",
       "bank": "AXIS",
       "bank_account": "925020047846436",
-      "broker_cn_aliases": [],
+      "broker_cn_aliases": [
+        {"mapin": "G587", "source": "EMKY", "note": ""},
+        {"mapin": "GSWP011", "source": "ESSI", "note": "Haitong code for Eterna"}
+      ],
       "kotak_client_id": "",
       "ws_overrides": [
         {

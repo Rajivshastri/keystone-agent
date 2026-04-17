@@ -41,7 +41,19 @@
       "sebi_code": "ICICI SECURITIES LTD",
       "sebi_reg_no": "INZ000183631",
       "sender_email": "equity.settlements@icicisecurities.com",
-      "subject_keyword": ""
+      "subject_keyword": "",
+      "pool_aliases": [
+        {
+          "pool_id": "mysticm_icici",
+          "alias_code": "25281",
+          "note": "ICICI back-office UCC for MYSTICM"
+        },
+        {
+          "pool_id": "mysticm_kotak",
+          "alias_code": "24708",
+          "note": "ICICI back-office UCC for Kotak WEMO pool (routes to 204496980)"
+        }
+      ]
     },
     {
       "active": true,
@@ -52,7 +64,14 @@
       "sebi_code": "MOTILAL",
       "sebi_reg_no": "INZ000158836",
       "sender_email": "instops@motilaloswal.com",
-      "subject_keyword": ""
+      "subject_keyword": "",
+      "pool_aliases": [
+        {
+          "pool_id": "aristos_hdfc",
+          "alias_code": "HDFC00001816",
+          "note": "Motilal custodian code for Aristos"
+        }
+      ]
     },
     {
       "active": true,
@@ -84,7 +103,14 @@
       "sebi_code": "EMKAY",
       "sebi_reg_no": "INB010804030",
       "sender_email": "inst@emkayglobal.com",
-      "subject_keyword": ""
+      "subject_keyword": "",
+      "pool_aliases": [
+        {
+          "pool_id": "eterna_axis",
+          "alias_code": "G587",
+          "note": ""
+        }
+      ]
     },
     {
       "active": true,
@@ -95,7 +121,19 @@
       "sebi_code": "HAITONG",
       "sebi_reg_no": "INZ000026435",
       "sender_email": "India.Ops@htisec.com",
-      "subject_keyword": ""
+      "subject_keyword": "",
+      "pool_aliases": [
+        {
+          "pool_id": "aristos_hdfc",
+          "alias_code": "GSWP012",
+          "note": "Haitong trading code for Aristos"
+        },
+        {
+          "pool_id": "eterna_axis",
+          "alias_code": "GSWP011",
+          "note": "Haitong code for Eterna"
+        }
+      ]
     }
   ],
   "trade_sources": [

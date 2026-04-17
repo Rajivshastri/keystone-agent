@@ -38,3 +38,9 @@ outbox.db
 agent-config.json
 dpapi-cache/
 .devdata/
+
+# Build-time generated (spec file overwrites before each build)
+agent/_build.py
+
+# Migration script backups
+config/*.json.bak-*

@@ -249,13 +249,10 @@ class TradeReconEngine:
             p['mapin'].upper(): p
             for p in pool_map.get('pools', [])
         }
-        # Also index broker_cn_aliases so UCCs like GSWP012 (Haitong) resolve
-        # to the same pool as the canonical mapin (GWPJ0004)
-        for p in pool_map.get('pools', []):
-            for alias in p.get('broker_cn_aliases', []):
-                _alias_mapin = (alias.get('mapin') or '').upper()
-                if _alias_mapin and _alias_mapin not in self._mapin_to_pool:
-                    self._mapin_to_pool[_alias_mapin] = p
+        # Alias codes (e.g. GSWP012 Haitong → aristos_hdfc GWPJ0004) arrive
+        # already synthesized as separate pool_map entries via PoolsHub —
+        # see core/pools_hub.py:pool_map_dict(). So self._mapin_to_pool
+        # above already contains the alias → canonical routing.
         # Index pool map by pool_name (OrderLog POOLNAME column → dealer_account)
         # Normalised: lower-case, spaces collapsed for fuzzy tolerance
         self._pool_name_to_pool = {
