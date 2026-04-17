@@ -849,6 +849,84 @@ def _parse_trade_table(text: str) -> List[ContractNoteTrade]:
         except (ValueError, ZeroDivisionError):
             continue
 
+    # ── Pass 1.4: ICICI name-first layouts ───────────────────────────────────
+    # Must run BEFORE Pass 1.5 — otherwise Pass 1.5's forgiving number-hunt
+    # picks up timestamps ("09:50:32" → qty=9) and Pay/Pay Out Obligation
+    # before we get a chance to use the exact ICICI name-first match.
+    _icici_pattern_p14 = re.compile(
+        r'([A-Z][A-Z &.()\-]+?)\s*'
+        r'(?:Buy|Sell)\s+'
+        r'([\d,]+)\s+'
+        r'([\d,]+\.\d+)\s+'
+        r'([\d,]+\.\d+)\s+'
+        r'([\d,]+\.\d+)\s+'
+        r'([\d,]+\.\d+)'
+        r'[\s\S]{0,80}?'
+        r'(IN[A-Z0-9]{10})',
+        re.IGNORECASE
+    )
+    _icici_concat_p14 = re.compile(
+        r'([A-Z][A-Z &.()\-]+?)'
+        r'(IN[EF][A-Z0-9]{9})\s+'
+        r'[\s\S]{0,80}?'
+        r'(?:Buy|Sell)\s+'
+        r'([\d,]+)\s+'
+        r'([\d,]+\.\d+)\s+'
+        r'([\d,]+\.\d+)\s+'
+        r'([\d,]+\.\d+)\s+'
+        r'([\d,]+\.\d+)',
+        re.IGNORECASE
+    )
+    for m in _icici_concat_p14.finditer(text):
+        try:
+            isin = m.group(2).strip()
+            if not (isin.startswith('INE') or isin.startswith('INF')): continue
+            if any(t.isin == isin for t in trades): continue
+            sec_name = m.group(1).strip().rstrip('-').strip()
+            qty      = float(m.group(3).replace(',', ''))
+            wap      = float(m.group(4).replace(',', ''))
+            brok     = float(m.group(5).replace(',', ''))
+            total    = float(m.group(7).replace(',', ''))
+            context  = text[max(0, m.start()-100):m.end()+500]
+            side     = 'Sell' if re.search(r'\bSell\b', m.group(0), re.IGNORECASE) else 'Buy'
+            stt_m    = re.search(r'Securit\w*\s+Tr[xa]\w*\s+Tax[^0-9]*([\d,]+\.?\d*)', context, re.IGNORECASE)
+            stt_raw  = float(stt_m.group(1).replace(',', '')) if stt_m else 0.0
+            exchange = 'BSE' if 'BSE' in context.upper() and 'NSE' not in context.upper() else 'NSE'
+            trades.append(ContractNoteTrade(
+                isin=isin, security_name=sec_name, side=side, qty=qty, wap=wap,
+                brokerage_per_share=brok, total_value=total, exchange=exchange,
+                stt_total=stt_raw,
+            ))
+            logger.info(f'Pass 1.4 ICICI concat: {isin} {sec_name} {side} qty={qty} wap={wap}')
+        except (ValueError, IndexError):
+            continue
+    for m in _icici_pattern_p14.finditer(text):
+        try:
+            isin = m.group(7).strip()
+            if not (isin.startswith('INE') or isin.startswith('INF')): continue
+            if any(t.isin == isin for t in trades): continue
+            sec_name = m.group(1).strip().rstrip('-').strip()
+            qty      = float(m.group(2).replace(',', ''))
+            wap      = float(m.group(3).replace(',', ''))
+            brok     = float(m.group(4).replace(',', ''))
+            total    = float(m.group(6).replace(',', ''))
+            context  = text[max(0, m.start()-100):m.end()+500]
+            side     = 'Sell' if re.search(r'\bSell\b|\bSL\+', context, re.IGNORECASE) else 'Buy'
+            stt_m    = re.search(r'Securit\w*\s+Tr[xa]\w*\s+Tax[^0-9]*([\d,]+\.?\d*)', context, re.IGNORECASE)
+            stt_raw  = 0.0
+            if stt_m:
+                try: stt_raw = float(stt_m.group(1).replace(',', ''))
+                except (ValueError, ZeroDivisionError): pass
+            exchange = 'BSE' if 'BSE' in context.upper() and 'NSE' not in context.upper() else 'NSE'
+            trades.append(ContractNoteTrade(
+                isin=isin, security_name=sec_name, side=side, qty=qty, wap=wap,
+                brokerage_per_share=brok, total_value=total, exchange=exchange,
+                stt_total=stt_raw,
+            ))
+            logger.info(f'Pass 1.4 ICICI: {isin} {sec_name} {side} qty={qty} wap={wap}')
+        except (ValueError, IndexError):
+            continue
+
     # ── Pass 1.5: Forgiving ISIN extraction (catches SELL-only rows) ─────────
     # Equirus SELL rows: BUY columns are empty, numbers may be on the same
     # line or the next few lines.  Use a 300-char window after the ISIN.
