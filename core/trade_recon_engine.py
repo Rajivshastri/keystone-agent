@@ -1241,12 +1241,12 @@ class TradeReconEngine:
                 charges = calculate_charges(
                     trade.qty, trade.wap, brok_rate, trade.side
                 )
-                # Brokerage: use CN value if present, else calculate at 5dp
-                brok_per_share = round(
-                    trade.brokerage_per_share or charges['brokerage_per_share'], 5
-                )
-                # STT: use total as parsed directly from the CN
-                stt_total = int(trade.stt_total) if trade.stt_total else 0
+                # Brokerage per share: NOT rounded — preserve full precision
+                # as-is (CN value if present, else calculated).
+                brok_per_share = (trade.brokerage_per_share
+                                  or charges['brokerage_per_share'])
+                # STT: integer (WS 0096 format requires whole rupees)
+                stt_total = int(round(trade.stt_total)) if trade.stt_total else 0
 
                 # MAPIN ID: use canonical pool mapin (not CN UCC which may be a
                 # broker back-office code like 25281 or HDFC00001816).
@@ -1271,7 +1271,7 @@ class TradeReconEngine:
                     transaction_date      = cn.trade_date,
                     settlement_date       = settle_date,
                     quantity              = trade.qty,
-                    price                 = trade.wap,
+                    price                 = _round_price(trade.wap),
                     brokerage_per_share   = brok_per_share,
                     service_tax           = 0.0,
                     settlement_flag       = 'F',
