@@ -791,8 +791,32 @@ def _cmd_set_standing_rule(payload: dict[str, Any]) -> CommandResult:
 # as the Flask app's manual flow).
 
 
+def _ws_reports_for(recon_type: str) -> list[str]:
+    """Return the list of WS report display names needed for a recon type.
+
+    Derives the list from the REPORTS definitions in ws_downloader.py by
+    filtering rows whose tag list contains `recon_type`. Masters-tagged
+    rows are intentionally excluded from every recon — they're reference
+    data that belongs in manual master-refresh flows, not pre-recon.
+    """
+    try:
+        from ws_downloader import REPORTS
+    except Exception:
+        return []
+    names: list[str] = []
+    for row in REPORTS:
+        # row = (display, stem, ext, ..., tags)
+        tags = row[-1] if isinstance(row[-1], list) else []
+        if "masters" in tags:
+            continue
+        if recon_type in tags:
+            names.append(row[0])
+    return names
+
+
 def _pre_reconciliation(
-    date_str: str, settings: AgentSettings, log: _LogCollector
+    date_str: str, settings: AgentSettings, log: _LogCollector,
+    recon_type: str = "",
 ) -> None:
     """Fetch emails + download WS masters for date_str.
 
@@ -875,7 +899,12 @@ def _pre_reconciliation(
             app_dir.mkdir(parents=True, exist_ok=True)
             date_obj = datetime.strptime(date_str, "%Y-%m-%d")
 
-            log(f"Pre-download: WS masters for {date_str}")
+            reports_filter = _ws_reports_for(recon_type) if recon_type else None
+            if reports_filter:
+                log(f"Pre-download: WS reports for {date_str} "
+                    f"({recon_type}): {', '.join(reports_filter)}")
+            else:
+                log(f"Pre-download: WS reports for {date_str}")
             result = run_all_downloads(
                 date_obj=date_obj,
                 app_dir=app_dir,
@@ -883,6 +912,7 @@ def _pre_reconciliation(
                     f"Pre-download {name}: {msg}",
                     level="error" if state == "error" else "info",
                 ),
+                reports_filter=reports_filter,
             )
             s = int(result.get("success_count", 0))
             t = int(result.get("total", 0))
@@ -913,7 +943,7 @@ def _run_holdings(job: PollJob) -> RunPush:
     settings = load_settings()
 
     # Auto-fetch emails + download WS masters before reconciliation
-    _pre_reconciliation(date_str, settings, log)
+    _pre_reconciliation(date_str, settings, log, recon_type="holdings")
     settings = load_settings()  # reload in case pre-step updated extras
     try:
         fm = _file_manager(settings.workdir)
@@ -1046,7 +1076,7 @@ def _run_bank(job: PollJob) -> RunPush:
     log(f"Starting bank reconciliation for {date_str}")
     settings = load_settings()
 
-    _pre_reconciliation(date_str, settings, log)
+    _pre_reconciliation(date_str, settings, log, recon_type="bank")
     settings = load_settings()
     try:
         fm = _file_manager(settings.workdir)
@@ -1217,7 +1247,7 @@ def _run_trade(job: PollJob) -> RunPush:
     log(f"Starting trade reconciliation for {date_str}")
     settings = load_settings()
 
-    _pre_reconciliation(date_str, settings, log)
+    _pre_reconciliation(date_str, settings, log, recon_type="trade")
     settings = load_settings()
     try:
         fm = _file_manager(settings.workdir)

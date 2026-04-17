@@ -111,10 +111,14 @@ class EmailIngestor:
         dt_start_s = dt_start.strftime('%Y-%m-%dT%H:%M:%SZ')
         dt_end_s   = dt_end.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-        log(f"Fetching emails from {self.mailbox} — window {dt_start_s} to {dt_end_s}")
+        _window_hours = int(round((dt_end - dt_start).total_seconds() / 3600))
+        log(f"Fetching emails from {self.mailbox} — window {dt_start_s} to {dt_end_s} "
+            f"(~{_window_hours}h)")
         log(f"Matching by sender address and zip filename prefix only")
 
-        # Fetch all messages in the 72-hour window using pagination
+        # Fetch all messages in the window using pagination. The default
+        # window is 72h but callers can override via dt_start_override/
+        # dt_end_override (the incremental fetch path uses 30-min overlap).
         # Graph API max per page is 100 — follow @odata.nextLink until exhausted
         first_url = (f"{GRAPH_BASE}/users/{self.mailbox}/messages"
                      f"?$filter=receivedDateTime ge {dt_start_s} "
@@ -150,7 +154,7 @@ class EmailIngestor:
                           for s in sources if s.get('sender_email')}
 
         with_att = sum(1 for m in messages if m.get('hasAttachments'))
-        log(f"Found {len(messages)} email(s) in 72hr window across {page} page(s) "
+        log(f"Found {len(messages)} email(s) in window across {page} page(s) "
             f"({with_att} with attachments)")
         active_sources = [s['name'] for s in sources if s.get('active', True)]
         log(f"Matching against {len(active_sources)} active source(s): {', '.join(active_sources)}")
