@@ -485,6 +485,8 @@ def execute_command(cmd_kind: str, payload: dict[str, Any]) -> CommandResult:
             return _cmd_master_pool_list(payload)
         if cmd_kind == "master_broker_list":
             return _cmd_master_broker_list(payload)
+        if cmd_kind == "master_custody_list":
+            return _cmd_master_custody_list(payload)
         return CommandResult.failure(f"unknown command kind: {cmd_kind!r}")
     except Exception as e:  # noqa: BLE001
         logger.exception(f"Command handler {cmd_kind!r} crashed")
@@ -1963,5 +1965,41 @@ def _cmd_master_broker_list(payload: dict[str, Any]) -> CommandResult:
         "row_count": len(brokers),
         "fetched_at": int(datetime.now(timezone.utc).timestamp()),
         "source_file": "broker_map.json",
+        "mode": "local",
+    })
+
+
+def _cmd_master_custody_list(payload: dict[str, Any]) -> CommandResult:
+    """Return the custody/dispatch master (custodian_dispatch.json).
+
+    This is the operational dispatch config — one row per custodian
+    (AXIS, HDFC, ICICI, KOTAK) with interface_type, report_format, and
+    email routing. Each row is flattened to include the custodian code
+    as a `code` field so the UI can sort/filter on it.
+    """
+    cd = _read_config_json("custodian_dispatch.json")
+    if cd is None:
+        return CommandResult.failure(
+            "custodian_dispatch.json not found — check agent config directory"
+        )
+    custodians = cd.get("custodians", {}) or {}
+    rows = []
+    for code, info in custodians.items():
+        if not isinstance(info, dict):
+            continue
+        rows.append({
+            "code": code,
+            "interface_type": info.get("interface_type", ""),
+            "report_format": info.get("report_format", ""),
+            "email_to": info.get("email_to", []),
+            "email_to_count": len(info.get("email_to", []) or []),
+            "send_from": info.get("send_from", ""),
+            "email_subject": info.get("email_subject", ""),
+        })
+    return CommandResult.success({
+        "rows": rows,
+        "row_count": len(rows),
+        "fetched_at": int(datetime.now(timezone.utc).timestamp()),
+        "source_file": "custodian_dispatch.json",
         "mode": "local",
     })
