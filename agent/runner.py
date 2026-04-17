@@ -487,6 +487,12 @@ def execute_command(cmd_kind: str, payload: dict[str, Any]) -> CommandResult:
             return _cmd_master_broker_list(payload)
         if cmd_kind == "master_custody_list":
             return _cmd_master_custody_list(payload)
+        if cmd_kind == "master_pool_upsert":
+            return _cmd_master_pool_upsert(payload)
+        if cmd_kind == "master_broker_upsert":
+            return _cmd_master_broker_upsert(payload)
+        if cmd_kind == "master_custody_upsert":
+            return _cmd_master_custody_upsert(payload)
         return CommandResult.failure(f"unknown command kind: {cmd_kind!r}")
     except Exception as e:  # noqa: BLE001
         logger.exception(f"Command handler {cmd_kind!r} crashed")
@@ -1975,7 +1981,9 @@ def _cmd_master_custody_list(payload: dict[str, Any]) -> CommandResult:
     This is the operational dispatch config — one row per custodian
     (AXIS, HDFC, ICICI, KOTAK) with interface_type, report_format, and
     email routing. Each row is flattened to include the custodian code
-    as a `code` field so the UI can sort/filter on it.
+    as a `code` field so the UI can sort/filter on it. Full detail
+    fields (email_subject, email_body) are included so the detail page
+    has everything it needs without a second round-trip.
     """
     cd = _read_config_json("custodian_dispatch.json")
     if cd is None:
@@ -1995,6 +2003,8 @@ def _cmd_master_custody_list(payload: dict[str, Any]) -> CommandResult:
             "email_to_count": len(info.get("email_to", []) or []),
             "send_from": info.get("send_from", ""),
             "email_subject": info.get("email_subject", ""),
+            "email_body": info.get("email_body", ""),
+            "active": info.get("active", True),
         })
     return CommandResult.success({
         "rows": rows,
@@ -2002,4 +2012,144 @@ def _cmd_master_custody_list(payload: dict[str, Any]) -> CommandResult:
         "fetched_at": int(datetime.now(timezone.utc).timestamp()),
         "source_file": "custodian_dispatch.json",
         "mode": "local",
+    })
+
+
+def _write_config_json(filename: str, data: Any) -> Path:
+    """Atomically write JSON to the agent's writable config dir.
+
+    Writes to a sibling tempfile and os.replace()s into place so a
+    crash mid-write can't leave a half-written config that would
+    fail to parse on next startup.
+    """
+    from agent.paths import config_dir
+    import json
+    import os
+    target = config_dir() / filename
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    os.replace(tmp, target)
+    return target
+
+
+def _cmd_master_pool_upsert(payload: dict[str, Any]) -> CommandResult:
+    """Insert or update one pool in pools_hub.json, keyed by pool_id.
+
+    Payload: {"pool": {pool_id, display_name, ..., broker_cn_aliases, ws_overrides}}
+
+    We match on pool_id (case-insensitive). If found, replace the row
+    in place to preserve order. If not found, append. The full pool
+    object from the payload is written verbatim — the CP is
+    responsible for sending a well-formed record.
+    """
+    pool = payload.get("pool")
+    if not isinstance(pool, dict):
+        return CommandResult.failure("missing 'pool' object in payload")
+    pool_id = str(pool.get("pool_id") or "").strip()
+    if not pool_id:
+        return CommandResult.failure("pool.pool_id is required")
+
+    hub = _read_config_json("pools_hub.json") or {}
+    pools = hub.get("pools", [])
+    if not isinstance(pools, list):
+        return CommandResult.failure("pools_hub.json malformed: 'pools' is not a list")
+
+    replaced = False
+    for i, existing in enumerate(pools):
+        if isinstance(existing, dict) and str(existing.get("pool_id", "")).lower() == pool_id.lower():
+            pools[i] = pool
+            replaced = True
+            break
+    if not replaced:
+        pools.append(pool)
+
+    hub["pools"] = pools
+    try:
+        path = _write_config_json("pools_hub.json", hub)
+    except Exception as e:
+        logger.exception("pool upsert write failed")
+        return CommandResult.failure(f"write failed: {type(e).__name__}: {e}")
+
+    return CommandResult.success({
+        "pool": pool,
+        "mode": "update" if replaced else "create",
+        "source_file": str(path.name),
+    })
+
+
+def _cmd_master_broker_upsert(payload: dict[str, Any]) -> CommandResult:
+    """Insert or update one broker in broker_map.json, keyed by dealer_code."""
+    broker = payload.get("broker")
+    if not isinstance(broker, dict):
+        return CommandResult.failure("missing 'broker' object in payload")
+    dealer_code = str(broker.get("dealer_code") or "").strip()
+    if not dealer_code:
+        return CommandResult.failure("broker.dealer_code is required")
+
+    bm = _read_config_json("broker_map.json") or {}
+    brokers = bm.get("brokers", [])
+    if not isinstance(brokers, list):
+        return CommandResult.failure("broker_map.json malformed: 'brokers' is not a list")
+
+    replaced = False
+    for i, existing in enumerate(brokers):
+        if isinstance(existing, dict) and str(existing.get("dealer_code", "")).lower() == dealer_code.lower():
+            brokers[i] = broker
+            replaced = True
+            break
+    if not replaced:
+        brokers.append(broker)
+
+    bm["brokers"] = brokers
+    try:
+        path = _write_config_json("broker_map.json", bm)
+    except Exception as e:
+        logger.exception("broker upsert write failed")
+        return CommandResult.failure(f"write failed: {type(e).__name__}: {e}")
+
+    return CommandResult.success({
+        "broker": broker,
+        "mode": "update" if replaced else "create",
+        "source_file": str(path.name),
+    })
+
+
+def _cmd_master_custody_upsert(payload: dict[str, Any]) -> CommandResult:
+    """Insert or update one custodian in custodian_dispatch.json.
+
+    Keyed by `code` in the input row. The on-disk format is a dict
+    keyed by code, so we assign the row (minus the code/count fields)
+    into custodians[code].
+    """
+    custody = payload.get("custody")
+    if not isinstance(custody, dict):
+        return CommandResult.failure("missing 'custody' object in payload")
+    code = str(custody.get("code") or "").strip()
+    if not code:
+        return CommandResult.failure("custody.code is required")
+
+    cd = _read_config_json("custodian_dispatch.json") or {}
+    custodians = cd.get("custodians", {})
+    if not isinstance(custodians, dict):
+        return CommandResult.failure("custodian_dispatch.json malformed: 'custodians' is not a dict")
+
+    existed = code in custodians
+    row = {k: v for k, v in custody.items() if k not in ("code", "email_to_count")}
+    custodians[code] = row
+    cd["custodians"] = custodians
+
+    try:
+        path = _write_config_json("custodian_dispatch.json", cd)
+    except Exception as e:
+        logger.exception("custody upsert write failed")
+        return CommandResult.failure(f"write failed: {type(e).__name__}: {e}")
+
+    return CommandResult.success({
+        "custody": {**row, "code": code, "email_to_count": len(row.get("email_to", []) or [])},
+        "mode": "update" if existed else "create",
+        "source_file": str(path.name),
     })
