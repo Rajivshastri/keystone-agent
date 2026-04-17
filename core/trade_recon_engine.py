@@ -30,6 +30,23 @@ logger = logging.getLogger(__name__)
 PRICE_TOLERANCE = 0.0   # zero tolerance — prices must match exactly (to 4dp)
 
 
+def _round_price(x) -> float:
+    """Round a price to 4 decimals using half-away-from-zero (schoolbook)
+    rounding, going through Decimal to avoid the FP artifacts that cause
+    Python's built-in round() to give surprising results on values like
+    982.07175 (which repr() displays as-is but internally is slightly
+    under). Without this, 982.07175 rounds to 982.0717 while the CN
+    value 982.0718 stays at 982.0718, producing a false price break."""
+    if x is None:
+        return 0.0
+    try:
+        from decimal import Decimal, ROUND_HALF_UP
+        return float(Decimal(str(float(x))).quantize(
+            Decimal('0.0001'), rounding=ROUND_HALF_UP))
+    except Exception:
+        return round(float(x), 4)
+
+
 # ── Result data classes ───────────────────────────────────────────────────── #
 
 @dataclass
@@ -757,9 +774,9 @@ class TradeReconEngine:
                     # Add the CN's net settlement amount (one per CN)
                     _cn_net_sum += getattr(cn, 'net_amount', 0.0)
 
-            cn_wap      = round(cn_wap_sum / total_cn_qty, 4) if total_cn_qty > 0 else 0.0
+            cn_wap      = _round_price(cn_wap_sum / total_cn_qty) if total_cn_qty > 0 else 0.0
             qty_match   = abs(total_cn_qty - dt.fill_qty) <= 0.01
-            price_match = round(cn_wap, 4) == round(dt.avg_px, 4)
+            price_match = _round_price(cn_wap) == _round_price(dt.avg_px)
 
             if qty_match and price_match:
                 status = 'MATCH'
