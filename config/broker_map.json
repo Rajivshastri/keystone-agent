@@ -167,6 +167,41 @@
           "pool_id": "eterna_axis",
           "alias_code": "GSWP011",
           "note": "Haitong code for Eterna"
+        },
+        {
+          "pool_id": "compass_icici",
+          "alias_code": "GSWP008",
+          "note": "Haitong UCC for Compass TrueNorth"
+        },
+        {
+          "pool_id": "mysticv_kotak",
+          "alias_code": "GSWP009",
+          "note": "Haitong UCC for Mystic Value Kotak"
+        },
+        {
+          "pool_id": "mysticm_kotak",
+          "alias_code": "GSWP010",
+          "note": "Haitong UCC for Mystic Momentum Kotak"
+        },
+        {
+          "pool_id": "mysticv_icici",
+          "alias_code": "GSWP021",
+          "note": "Haitong UCC for Mystic Value ICICI"
+        },
+        {
+          "pool_id": "mysticm_icici",
+          "alias_code": "GSWP022",
+          "note": "Haitong UCC for Mystic Momentum ICICI"
+        },
+        {
+          "pool_id": "goldfalpms_axis",
+          "alias_code": "GSWP026",
+          "note": "Haitong UCC for Focused Alpha"
+        },
+        {
+          "pool_id": "bjw_hdfc",
+          "alias_code": "GSWP029",
+          "note": "Haitong UCC for BJW HDFC"
         }
       ]
     }
