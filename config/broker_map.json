@@ -67,7 +67,54 @@
       "sebi_code": "IIFLSEC",
       "sebi_reg_no": "INZ000164132",
       "sender_email": "",
-      "subject_keyword": "India Trade Confirms"
+      "subject_keyword": "India Trade Confirms",
+      "pool_aliases": [
+        {
+          "pool_id": "compass_icici",
+          "alias_code": "INST21740",
+          "note": "IIFL UCC for Compass TrueNorth"
+        },
+        {
+          "pool_id": "mysticv_kotak",
+          "alias_code": "INST21835",
+          "note": "IIFL UCC for Mystic Value Kotak"
+        },
+        {
+          "pool_id": "mysticm_kotak",
+          "alias_code": "INST21836",
+          "note": "IIFL UCC for Mystic Momentum Kotak"
+        },
+        {
+          "pool_id": "eterna_axis",
+          "alias_code": "INST21843",
+          "note": "IIFL UCC for Eterna Wealth Core"
+        },
+        {
+          "pool_id": "aristos_hdfc",
+          "alias_code": "INST21860",
+          "note": "IIFL UCC for Aristos"
+        },
+        {
+          "pool_id": "mysticv_icici",
+          "alias_code": "INST22265",
+          "note": "IIFL UCC for Mystic Value ICICI"
+        },
+        {
+          "pool_id": "mysticm_icici",
+          "alias_code": "INST22266",
+          "note": "IIFL UCC for Mystic Momentum ICICI"
+        },
+        {
+          "pool_id": "goldfalpms_axis",
+          "alias_code": "INST22310",
+          "note": "IIFL UCC for Focused Alpha (listed as 'ALPHA')"
+        },
+        {
+          "pool_id": "bjw_hdfc",
+          "alias_code": "INST22462",
+          "note": "IIFL UCC for BJW"
+        }
+      ]
     },
     {
       "active": true,
