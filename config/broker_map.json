@@ -52,6 +52,41 @@
           "pool_id": "mysticm_kotak",
           "alias_code": "24708",
           "note": "ICICI back-office UCC for Kotak WEMO pool (routes to 204496980)"
+        },
+        {
+          "pool_id": "compass_icici",
+          "alias_code": "24559",
+          "note": "ICICI back-office UCC for Compass TrueNorth"
+        },
+        {
+          "pool_id": "mysticv_kotak",
+          "alias_code": "24709",
+          "note": "ICICI back-office UCC for Mystic Value Kotak"
+        },
+        {
+          "pool_id": "eterna_axis",
+          "alias_code": "24712",
+          "note": "ICICI back-office UCC for Eterna Wealth Core"
+        },
+        {
+          "pool_id": "aristos_hdfc",
+          "alias_code": "24725",
+          "note": "ICICI back-office UCC for Aristos"
+        },
+        {
+          "pool_id": "mysticv_icici",
+          "alias_code": "25282",
+          "note": "ICICI back-office UCC for Mystic Value"
+        },
+        {
+          "pool_id": "goldfalpms_axis",
+          "alias_code": "25364",
+          "note": "ICICI back-office UCC for Focused Alpha"
+        },
+        {
+          "pool_id": "bjw_hdfc",
+          "alias_code": "25514",
+          "note": "ICICI back-office UCC for BJW"
         }
       ]
     },
