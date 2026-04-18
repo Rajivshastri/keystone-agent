@@ -26,6 +26,26 @@ TOKEN_URL    = 'https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token'
 GRAPH_SCOPE  = 'https://graph.microsoft.com/.default'
 
 
+def _normalize_senders(source: dict) -> list:
+    """Return lowercase/stripped sender addresses configured on a source.
+
+    The 'sender_email' field accepts either:
+      - a string: "custreport@icicibank.com"                 (legacy)
+      - a list  : ["custreport@icicibank.com",
+                   "custreport@icici.bank.in"]               (multi-domain)
+
+    Big custodians sometimes send from more than one domain (e.g. ICICI
+    toggled between icicibank.com and icici.bank.in), so this accepts
+    either shape uniformly.
+    """
+    raw = source.get('sender_email')
+    if isinstance(raw, list):
+        return [str(x).lower().strip() for x in raw if x and str(x).strip()]
+    if isinstance(raw, str) and raw.strip():
+        return [raw.lower().strip()]
+    return []
+
+
 class EmailIngestor:
 
     def __init__(self, azure_config: dict):
@@ -150,8 +170,7 @@ class EmailIngestor:
             return [{'source': 'all', 'status': 'error', 'message': msg}]
 
         # Build set of known sender addresses for diagnostic logging
-        _known_senders = {s.get('sender_email', '').lower().strip()
-                          for s in sources if s.get('sender_email')}
+        _known_senders = {addr for s in sources for addr in _normalize_senders(s)}
 
         with_att = sum(1 for m in messages if m.get('hasAttachments'))
         log(f"Found {len(messages)} email(s) in window across {page} page(s) "
@@ -694,16 +713,18 @@ class EmailIngestor:
             if not source.get('active', True):
                 continue
 
-            configured_sender   = source.get('sender_email', '').lower().strip()
+            configured_senders  = _normalize_senders(source)
             subject_keyword     = source.get('subject_keyword', '').strip()
             subject_prefix      = source.get('subject_prefix', '').strip()
 
             # At least one criterion must be configured
-            if not configured_sender and not subject_keyword and not subject_prefix:
+            if not configured_senders and not subject_keyword and not subject_prefix:
                 continue
 
-            # Sender check (case-insensitive substring)
-            if configured_sender and configured_sender not in sender.lower():
+            # Sender check — any configured address appears as substring
+            if configured_senders and not any(
+                cs in sender.lower() for cs in configured_senders
+            ):
                 continue
 
             # Subject keyword — must appear anywhere in subject (case-insensitive)
@@ -1345,8 +1366,7 @@ class EmailIngestor:
         for src in sources:
             if not src.get('active', True):
                 continue
-            addr = src.get('sender_email', '').lower().strip()
-            if addr:
+            for addr in _normalize_senders(src):
                 sender_map[addr] = src['name']
 
         if not sender_map:

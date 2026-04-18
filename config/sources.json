@@ -2,13 +2,16 @@
   "sources": [
     {
       "active": true,
-      "display_name": "ICICI Bank \u2014 Holdings",
+      "display_name": "ICICI Bank — Holdings",
       "file_date_offset": 1,
       "file_password": "",
       "is_bank": false,
       "name": "icici",
       "parser": "icici",
-      "sender_email": "custreport@icicibank.com",
+      "sender_email": [
+        "custreport@icicibank.com",
+        "custreport@icici.bank.in"
+      ],
       "subject_keyword": "HOLDING REPORT",
       "subject_prefix": "",
       "take_last_only": true,
@@ -18,7 +21,7 @@
     {
       "active": true,
       "date_filter": true,
-      "display_name": "HDFC Bank \u2014 Holdings",
+      "display_name": "HDFC Bank — Holdings",
       "file_date_offset": 1,
       "file_password": "",
       "is_bank": false,
@@ -34,7 +37,7 @@
     },
     {
       "active": true,
-      "display_name": "Kotak Bank \u2014 Holdings",
+      "display_name": "Kotak Bank — Holdings",
       "file_date_offset": 0,
       "file_password": "",
       "is_bank": false,
@@ -49,7 +52,7 @@
     },
     {
       "active": true,
-      "display_name": "Axis Bank \u2014 Holdings",
+      "display_name": "Axis Bank — Holdings",
       "file_date_offset": 0,
       "file_password": "AALCG4181G",
       "is_bank": false,
@@ -65,7 +68,7 @@
     {
       "active": true,
       "attachment_type": "txt_or_csv",
-      "display_name": "ICICI Bank \u2014 Bank Statement",
+      "display_name": "ICICI Bank — Bank Statement",
       "file_date_offset": 0,
       "file_password": "",
       "is_bank": true,
@@ -81,7 +84,7 @@
     {
       "active": true,
       "attachment_type": "zip",
-      "display_name": "HDFC Bank \u2014 Bank Statement",
+      "display_name": "HDFC Bank — Bank Statement",
       "file_date_offset": 1,
       "file_password": "",
       "is_bank": true,
@@ -97,7 +100,7 @@
     {
       "active": true,
       "attachment_type": "zip",
-      "display_name": "HDFC Bank \u2014 Bank Balance",
+      "display_name": "HDFC Bank — Bank Balance",
       "file_date_offset": 1,
       "file_password": "",
       "is_bank": true,
@@ -114,7 +117,7 @@
       "active": true,
       "attachment_type": "zip_aes256",
       "balance_filename_keyword": "BankBalance",
-      "display_name": "Axis Bank \u2014 Bank Statement",
+      "display_name": "Axis Bank — Bank Statement",
       "file_date_offset": 0,
       "file_password": "",
       "is_bank": true,
@@ -132,7 +135,7 @@
     {
       "active": true,
       "attachment_type": "csv_in_zip",
-      "display_name": "Kotak Bank \u2014 Bank Statement",
+      "display_name": "Kotak Bank — Bank Statement",
       "file_date_offset": 0,
       "file_password": "",
       "is_bank": true,
