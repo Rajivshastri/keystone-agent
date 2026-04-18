@@ -9,7 +9,54 @@
       "sebi_code": "INZ000251536",
       "sebi_reg_no": "INZ000251536",
       "sender_email": "backoffice@equirus.com",
-      "subject_keyword": "Trade Confirmation"
+      "subject_keyword": "Trade Confirmation",
+      "pool_aliases": [
+        {
+          "pool_id": "compass_icici",
+          "alias_code": "G658",
+          "note": "Equirus UCC for Compass TrueNorth"
+        },
+        {
+          "pool_id": "mysticv_kotak",
+          "alias_code": "G659",
+          "note": "Equirus UCC for Mystic Value Kotak"
+        },
+        {
+          "pool_id": "mysticm_kotak",
+          "alias_code": "G660",
+          "note": "Equirus UCC for Mystic Momentum Kotak"
+        },
+        {
+          "pool_id": "eterna_axis",
+          "alias_code": "G661",
+          "note": "Equirus UCC for Eterna Wealth Core"
+        },
+        {
+          "pool_id": "aristos_hdfc",
+          "alias_code": "G662",
+          "note": "Equirus UCC for Aristos"
+        },
+        {
+          "pool_id": "mysticv_icici",
+          "alias_code": "G673",
+          "note": "Equirus UCC for Mystic Value ICICI"
+        },
+        {
+          "pool_id": "mysticm_icici",
+          "alias_code": "G674",
+          "note": "Equirus UCC for Mystic Momentum ICICI"
+        },
+        {
+          "pool_id": "goldfalpms_axis",
+          "alias_code": "G676",
+          "note": "Equirus UCC for Focused Alpha"
+        },
+        {
+          "pool_id": "bjw_hdfc",
+          "alias_code": "G679",
+          "note": "Equirus UCC for BJW"
+        }
+      ]
     },
     {
       "active": true,
