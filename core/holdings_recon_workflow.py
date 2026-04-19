@@ -291,6 +291,26 @@ def run_holdings_recon(
     if kotak_custody_path:
         log_fn(f"Kotak custody: {os.path.basename(kotak_custody_path)}")
 
+    # Previous-business-day custody snapshot — lets the recon engine
+    # annotate break/WS-Only rows with "Likely pending sell — custody
+    # dropped since <prev_date>" when yesterday had the position and
+    # no WS trade explains today's gap. Non-fatal: missing snapshot
+    # just disables the hint.
+    prev_snapshot = {}
+    prev_date = None
+    try:
+        from core.prev_custody import load_custody_snapshot, prev_business_day
+        from agent.paths import config_dir as _agent_config_dir
+        prev_date = prev_business_day(date_str)
+        prev_snapshot = load_custody_snapshot(
+            prev_date,
+            workdir=fm.base_dir,
+            sources_path=_agent_config_dir() / 'sources.json',
+            log_fn=log_fn,
+        )
+    except Exception as _e:
+        log_fn(f"Prev custody snapshot failed ({_e}) — annotation disabled")
+
     out_path, warnings, results = engine.run(
         records=records,
         ws_holdings_path=ws_holdings_path,
@@ -300,6 +320,8 @@ def run_holdings_recon(
         date_str=date_str,
         kotak_custody_path=kotak_custody_path,
         pool_mapin_codes=pool_mapin_codes,
+        prev_custody=prev_snapshot,
+        prev_date_str=prev_date,
     )
 
     return HoldingsReconResult(

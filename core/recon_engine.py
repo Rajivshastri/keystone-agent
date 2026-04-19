@@ -411,9 +411,17 @@ class ReconEngine:
             output_dir: str,
             date_str: str,
             kotak_custody_path: Optional[str] = None,
-            pool_mapin_codes: set = None) -> Tuple[str, List[str]]:
+            pool_mapin_codes: set = None,
+            prev_custody: Optional[Dict[Tuple[str, str], dict]] = None,
+            prev_date_str: Optional[str] = None) -> Tuple[str, List[str]]:
         """
         Run the full reconciliation and write the Excel report.
+
+        `prev_custody` is an optional {(client, isin): {logical, saleable, ...}}
+        snapshot from the previous business day (see core/prev_custody.py).
+        When provided, break rows with no current-day trade explanation are
+        enriched with a "Custody dropped by N since <prev_date_str>" note so
+        un-booked sells stand out at a glance.
 
         Returns (output_path, warnings)
         """
@@ -771,6 +779,45 @@ class ReconEngine:
                             row['category'] = self.UNEXPLAINED
                             results[self.UNEXPLAINED].append(row)
 
+        # ── Likely-pending-sell annotation ────────────────────────────────
+        # For every break / WS-Only row with no current-day trade explanation,
+        # check whether the previous business day's custody had the position.
+        # A custody-side drop with no matching WS trade is the signature of
+        # a sell that's been executed but not yet booked in WS — most common
+        # operational break.
+        likely_sell_count = 0
+        if prev_custody:
+            label = prev_date_str or "previous business day"
+            for cat in (self.UNEXPLAINED, self.WS_ONLY, self.CUSTODY_ONLY):
+                for r in results.get(cat, []):
+                    if r.get('note'):
+                        continue
+                    key = (r.get('client', ''), r.get('isin', ''))
+                    prev = prev_custody.get(key)
+                    if not prev:
+                        continue
+                    prev_qty = float(prev.get('logical', 0) or 0)
+                    today_qty = float(r.get('logical', 0) or 0)
+                    if prev_qty <= today_qty:
+                        continue
+                    drop = prev_qty - today_qty
+                    ws_qty = float(r.get('ws_qty', 0) or 0)
+                    if ws_qty + 1 < prev_qty * 0.95:
+                        continue
+                    r['prev_custody_qty'] = prev_qty
+                    r['likely_pending_sell'] = True
+                    r['note'] = (
+                        f"Likely pending sell — custody dropped by {drop:.0f} "
+                        f"since {label}; no matching WS trade booked"
+                    )
+                    likely_sell_count += 1
+            if likely_sell_count:
+                logger.info(
+                    f"Flagged {likely_sell_count} break(s) as likely pending "
+                    f"sell (custody dropped since {label})"
+                )
+        self._likely_sell_count = likely_sell_count
+
         # Write report
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         from datetime import datetime as _dt
@@ -868,6 +915,19 @@ class ReconEngine:
         ws.cell(10, 1, 'TOTAL').font = Font(bold=True, name='Calibri', size=10)
         ws.cell(10, 2, total).font   = Font(bold=True, name='Calibri', size=10)
         ws.cell(10, 2).alignment = Alignment(horizontal='center')
+
+        # Likely-pending-sell hint (if any break rows were annotated)
+        likely = getattr(self, '_likely_sell_count', 0) or 0
+        if likely:
+            note = (f"⓵ Of the breaks above, {likely} look like un-booked "
+                    f"sells — custody dropped day-over-day with no matching "
+                    f"WS trade. See the Note column on each sheet.")
+            ws.cell(10, 4, note).font = Font(
+                color='B06820', name='Calibri', size=10, italic=True)
+            ws.merge_cells(start_row=10, start_column=4, end_row=10, end_column=8)
+            ws.cell(10, 4).alignment = Alignment(
+                horizontal='left', vertical='center', wrap_text=True)
+            ws.row_dimensions[10].height = 28
 
         # Strategy breakdown for breaks
         ws['A11'] = 'Strategy Breakdown — All Breaks (Unexplained + Custody Only + WS Only)'
