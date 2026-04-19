@@ -786,6 +786,7 @@ class ReconEngine:
         # a sell that's been executed but not yet booked in WS — most common
         # operational break.
         likely_sell_count = 0
+        self._prev_snapshot_status = 'ok' if prev_custody else 'missing'
         if prev_custody:
             label = prev_date_str or "previous business day"
             for cat in (self.UNEXPLAINED, self.WS_ONLY, self.CUSTODY_ONLY):
@@ -805,16 +806,16 @@ class ReconEngine:
                     if ws_qty + 1 < prev_qty * 0.95:
                         continue
                     r['prev_custody_qty'] = prev_qty
-                    r['likely_pending_sell'] = True
+                    r['unbooked_sell'] = True
                     r['note'] = (
-                        f"Likely pending sell — custody dropped by {drop:.0f} "
-                        f"since {label}; no matching WS trade booked"
+                        f"Sell not booked in WS — custody dropped by "
+                        f"{drop:.0f} since {label}; no matching WS trade"
                     )
                     likely_sell_count += 1
             if likely_sell_count:
                 logger.info(
-                    f"Flagged {likely_sell_count} break(s) as likely pending "
-                    f"sell (custody dropped since {label})"
+                    f"Flagged {likely_sell_count} break(s) as un-booked "
+                    f"sells (custody dropped since {label})"
                 )
         self._likely_sell_count = likely_sell_count
 
@@ -916,14 +917,24 @@ class ReconEngine:
         ws.cell(10, 2, total).font   = Font(bold=True, name='Calibri', size=10)
         ws.cell(10, 2).alignment = Alignment(horizontal='center')
 
-        # Likely-pending-sell hint (if any break rows were annotated)
+        # Un-booked sell banner, or diagnostic if prev snapshot was missing
         likely = getattr(self, '_likely_sell_count', 0) or 0
+        snapshot_status = getattr(self, '_prev_snapshot_status', '')
+        note = ''
+        color = ''
         if likely:
-            note = (f"⓵ Of the breaks above, {likely} look like un-booked "
-                    f"sells — custody dropped day-over-day with no matching "
-                    f"WS trade. See the Note column on each sheet.")
+            note = (f"⚠ {likely} of the breaks above are sells not yet "
+                    f"booked in WS — custody dropped day-over-day with no "
+                    f"matching trade. See the Note column on each sheet.")
+            color = 'B06820'
+        elif snapshot_status == 'missing':
+            note = ("⚠ Prev-day custody snapshot unavailable — un-booked "
+                    "sell detection disabled. Yesterday's raw custody files "
+                    "were not on disk (check KEYSTONE_DATA_DIR persistence).")
+            color = 'C0392B'
+        if note:
             ws.cell(10, 4, note).font = Font(
-                color='B06820', name='Calibri', size=10, italic=True)
+                color=color, name='Calibri', size=10, italic=True)
             ws.merge_cells(start_row=10, start_column=4, end_row=10, end_column=8)
             ws.cell(10, 4).alignment = Alignment(
                 horizontal='left', vertical='center', wrap_text=True)
