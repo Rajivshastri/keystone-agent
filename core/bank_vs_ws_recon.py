@@ -47,6 +47,8 @@ class TxnMatchResult:
     ws_sum:          float        # Σ ws_amounts
     variance:        float        # cust_amount - ws_sum
     status:          str          # MATCHED | CUST ONLY | WS ONLY | PARTIAL
+    note:            str  = ''    # Human-readable explanation (e.g. un-booked sell)
+    unbooked_sell:   bool = False # True when a custodian credit has no WS match
 
     @property
     def is_matched(self) -> bool:
@@ -54,16 +56,18 @@ class TxnMatchResult:
 
     def to_dict(self) -> dict:
         return {
-            'date':         self.date,
-            'cust_amount':  self.cust_amount,
-            'cust_desc':    self.cust_desc,
-            'cust_account': self.cust_account,
-            'ws_amounts':   self.ws_amounts,
-            'ws_descs':     self.ws_descs,
-            'ws_accounts':  self.ws_accounts,
-            'ws_sum':       self.ws_sum,
-            'variance':     self.variance,
-            'status':       self.status,
+            'date':          self.date,
+            'cust_amount':   self.cust_amount,
+            'cust_desc':     self.cust_desc,
+            'cust_account':  self.cust_account,
+            'ws_amounts':    self.ws_amounts,
+            'ws_descs':      self.ws_descs,
+            'ws_accounts':   self.ws_accounts,
+            'ws_sum':        self.ws_sum,
+            'variance':      self.variance,
+            'status':        self.status,
+            'note':          self.note,
+            'unbooked_sell': self.unbooked_sell,
         }
 
 
@@ -127,6 +131,11 @@ class PoolReconResult:
 
     # Layer 3
     txn_matches: List[TxnMatchResult] = field(default_factory=list)
+
+    # Un-booked sell annotation (post-classification pass)
+    note:                 str   = ''    # Pool-level explanation, e.g. "Sell proceeds not booked in WS..."
+    unbooked_sell_count:  int   = 0
+    unbooked_sell_amount: float = 0.0
 
     @property
     def has_break(self) -> bool:
@@ -230,6 +239,9 @@ class PoolReconResult:
             'l2_status':           self.l2_status,
             'overall_status':      self.overall_status,
             'txn_matches':         [t.to_dict() for t in self.txn_matches],
+            'note':                 self.note,
+            'unbooked_sell_count':  self.unbooked_sell_count,
+            'unbooked_sell_amount': self.unbooked_sell_amount,
         }
 
 
@@ -732,12 +744,64 @@ class BankVsWSReconEngine:
         # Count cust_only BREAK accounts against the overall break tally
         cust_only_breaks = sum(1 for c in summary.cust_only_accounts if c.get('status') == 'BREAK')
 
+        # ── Annotate un-booked sells ──────────────────────────────────────
+        self._annotate_unbooked_sells(summary)
+
         logger.info(
             f'BankVsWS Recon: {summary.total_pools} pools — '
             f'{summary.clean} CLEAN, {summary.covered} COVERED, {summary.breaks} BREAK'
             f' (incl. {cust_only_breaks} unresolved custodian account(s))'
         )
         return summary
+
+    def _annotate_unbooked_sells(self, summary: 'BankReconSummary') -> None:
+        """Flag CUST-ONLY credits as un-booked sell proceeds.
+
+        A custodian credit with no matching WS entry is the signature of a
+        sell that has settled in the pool account but has not yet been
+        booked in WS — the bank-recon mirror of the holdings-recon
+        un-booked-sell annotation.
+
+        For each pool with a break (SHORTFALL = cust > ws), walks the
+        txn_matches list, marks each CUST ONLY credit with a note, and
+        rolls up a pool-level summary noting how much of the variance is
+        explained by these un-booked sells.
+        """
+        for pr in summary.pool_results:
+            if pr.overall_status in ('Clean', 'Settlement Timing',
+                                     'No Statement', 'Not in WS'):
+                continue
+            pool_unbooked = 0
+            pool_amount   = 0.0
+            for tm in pr.txn_matches:
+                if tm.status != 'CUST ONLY':
+                    continue
+                if tm.cust_amount is None or tm.cust_amount <= 0:
+                    continue  # only credits are un-booked sell proceeds
+                tm.unbooked_sell = True
+                tm.note = 'Sell proceeds not booked in WS'
+                pool_unbooked += 1
+                pool_amount   += tm.cust_amount
+            if pool_unbooked == 0:
+                continue
+            pr.unbooked_sell_count  = pool_unbooked
+            pr.unbooked_sell_amount = round(pool_amount, 2)
+            # If the un-booked credits roughly explain the SHORTFALL
+            # variance, say so explicitly; otherwise just report the count.
+            explains = (
+                pr.l1_status == 'SHORTFALL'
+                and abs(pool_amount - pr.l1_variance) <= max(TOLERANCE, abs(pr.l1_variance) * 0.01)
+            )
+            if explains:
+                pr.note = (
+                    f'Sell proceeds not booked in WS — {pool_unbooked} custodian '
+                    f'credit(s) totalling {pool_amount:,.2f} explain the variance'
+                )
+            else:
+                pr.note = (
+                    f'{pool_unbooked} custodian credit(s) totalling '
+                    f'{pool_amount:,.2f} not booked in WS (likely sell proceeds)'
+                )
     # ------------------------------------------------------------------ #
     #  Helpers                                                              #
     # ------------------------------------------------------------------ #

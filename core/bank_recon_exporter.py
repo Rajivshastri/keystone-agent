@@ -114,6 +114,7 @@ def export_bank_recon(
 
     _build_summary_sheet(wb.active, summary_dict, recon_date)
     _build_detail_sheet(wb.create_sheet("Pool Detail"), summary_dict)
+    _build_unbooked_sheet(wb.create_sheet("Un-Booked Sells"), summary_dict)
     _build_issues_sheet(wb.create_sheet("Issues"), summary_dict)
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
@@ -203,12 +204,13 @@ DETAIL_HEADERS = [
     "WS Closing",
     "Variance",
     "Status",
+    "Note",
 ]
 
 
 def _build_detail_sheet(ws, summary: dict[str, Any]) -> None:
     # Title banner
-    ws.merge_cells("A1:I1")
+    ws.merge_cells("A1:J1")
     cell = ws["A1"]
     from core.date_format import display_date as _disp_d
     cell.value = f"Pool Detail — {_disp_d(summary.get('date') or '')}"
@@ -243,6 +245,7 @@ def _build_detail_sheet(ws, summary: dict[str, Any]) -> None:
             float(p.get("ws_closing_sum") or 0),
             float(p.get("l1_variance") or 0),
             p.get("overall_status") or "—",
+            p.get("note") or "",
         ]
         fill = _status_fill(str(p.get("overall_status") or ""))
         for i, v in enumerate(values, start=1):
@@ -254,9 +257,94 @@ def _build_detail_sheet(ws, summary: dict[str, Any]) -> None:
                 c.alignment = RIGHT
                 if i == 8 and abs(v) > 0.05:  # Variance
                     c.font = Font(bold=True, color=RED)
+            if i == 10 and v:
+                c.alignment = Alignment(wrap_text=True, vertical="center")
         row += 1
 
-    for i, w in enumerate([30, 10, 24, 16, 16, 16, 16, 14, 18], start=1):
+    for i, w in enumerate([30, 10, 24, 16, 16, 16, 16, 14, 18, 55], start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+
+# ── Sheet 2b: Un-Booked Sells ────────────────────────────────────── #
+
+
+UNBOOKED_HEADERS = [
+    "Strategy",
+    "Bank",
+    "Pool Account",
+    "Date",
+    "Credit Amount",
+    "Description",
+    "Status",
+]
+
+
+def _build_unbooked_sheet(ws, summary: dict[str, Any]) -> None:
+    """Flat list of every custodian credit flagged as an un-booked sell."""
+    ws.merge_cells("A1:G1")
+    cell = ws["A1"]
+    from core.date_format import display_date as _disp_d
+    cell.value = f"Likely un-booked sells — {_disp_d(summary.get('date') or '')}"
+    cell.font = Font(bold=True, color=NAVY, size=13)
+    cell.alignment = LEFT
+
+    ws.merge_cells("A2:G2")
+    intro = ws["A2"]
+    intro.value = (
+        "Custodian account received a credit on this date but no matching "
+        "entry appears in the WS Bank Book — the typical signature of a sell "
+        "that settled in the pool but was not yet booked in WealthSpectrum."
+    )
+    intro.font = Font(size=9, italic=True, color=GREY)
+    intro.alignment = Alignment(wrap_text=True, vertical="center")
+    ws.row_dimensions[2].height = 30
+
+    for i, h in enumerate(UNBOOKED_HEADERS, start=1):
+        c = ws.cell(row=3, column=i, value=h)
+        c.font = HDR_CELL
+        c.fill = FILL_NAVY
+        c.alignment = CENTER
+        c.border = BORDER
+
+    rows = []
+    for p in summary.get("pool_results") or []:
+        for tm in p.get("txn_matches") or []:
+            if not tm.get("unbooked_sell"):
+                continue
+            rows.append((p, tm))
+
+    row = 4
+    if not rows:
+        ws.cell(row=row, column=1, value="No un-booked sells detected on this date.").font = Font(
+            italic=True, color=GREY
+        )
+    else:
+        rows.sort(key=lambda x: (
+            str(x[0].get("bank") or ""),
+            str(x[0].get("strategy_name") or ""),
+            str(x[1].get("date") or ""),
+        ))
+        for p, tm in rows:
+            values = [
+                p.get("strategy_name") or "—",
+                p.get("bank") or "—",
+                p.get("cust_account") or "—",
+                tm.get("date") or "—",
+                float(tm.get("cust_amount") or 0),
+                tm.get("cust_desc") or "",
+                p.get("overall_status") or "—",
+            ]
+            for i, v in enumerate(values, start=1):
+                c = ws.cell(row=row, column=i, value=v)
+                c.border = BORDER
+                c.fill = FILL_AMBER
+                if isinstance(v, float):
+                    c.number_format = NUM_FMT
+                    c.alignment = RIGHT
+                    c.font = Font(bold=True)
+            row += 1
+
+    for i, w in enumerate([30, 10, 24, 14, 16, 50, 18], start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
 
