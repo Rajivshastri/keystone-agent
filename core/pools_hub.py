@@ -148,6 +148,10 @@ class PoolsHub:
                      ('if_client_id', 'if_client_id_prefix', 'then_ws_scheme_code')}
                     for r in p.get('ws_overrides', [])
                 ],
+                # Sub-account linkage — drives coverage inheritance for pools
+                # that share the parent's custody file (e.g. Aristos NRO).
+                'parent_pool_id':        p.get('parent_pool_id', ''),
+                'is_sub_account':        bool(p.get('is_sub_account')),
             }
             strategy_mappings.append(entry)
         return {'strategy_mappings': strategy_mappings}

@@ -969,10 +969,23 @@ def _run_holdings(job: PollJob) -> RunPush:
         }
         sources = _load_config_json("sources.json").get("sources", [])
 
-        # Pool-level MAPIN/custodian codes to skip in custodian files
-        # (pools with skip_pool_row_in_custodian=True, currently Axis only).
+        # Pool-level MAPIN/custodian codes to skip in custodian files.
+        # Auto-detect: whenever a pool's `mapin` equals its `custodian_code`
+        # the custodian (Axis-style) is known to emit a pool-level summary
+        # row under that code, which would otherwise surface as a phantom
+        # Custody-Only break. Sub-accounts are excluded because their mapin
+        # IS a valid investor code (e.g. GWPJ0016). The legacy
+        # `skip_pool_row_in_custodian: true` opt-in is still honoured as a
+        # supplement for any pool that doesn't fit the auto rule, so the
+        # behaviour is robust even if master-edit strips the flag.
         pool_mapin_codes: set[str] = set()
         for pool in getattr(hub, "_pools", []) or []:
+            if pool.get("is_sub_account"):
+                continue
+            mapin_v = str(pool.get("mapin") or "").strip().upper()
+            cust_v  = str(pool.get("custodian_code") or "").strip().upper()
+            if mapin_v and cust_v and mapin_v == cust_v:
+                pool_mapin_codes.add(mapin_v)
             if pool.get("skip_pool_row_in_custodian"):
                 for fld in ("mapin", "custodian_code"):
                     v = str(pool.get(fld, "")).strip().upper()
@@ -2041,10 +2054,11 @@ def _cmd_master_pool_upsert(payload: dict[str, Any]) -> CommandResult:
 
     Payload: {"pool": {pool_id, display_name, ..., broker_cn_aliases, ws_overrides}}
 
-    We match on pool_id (case-insensitive). If found, replace the row
-    in place to preserve order. If not found, append. The full pool
-    object from the payload is written verbatim — the CP is
-    responsible for sending a well-formed record.
+    We match on pool_id (case-insensitive). If found, shallow-merge the
+    payload over the existing record so fields the CP form doesn't know
+    about (e.g. skip_pool_row_in_custodian, parent_pool_id, is_sub_account,
+    ws_overrides from an older schema) survive the round-trip. If not
+    found, append the record as-is.
     """
     pool = payload.get("pool")
     if not isinstance(pool, dict):
@@ -2061,7 +2075,9 @@ def _cmd_master_pool_upsert(payload: dict[str, Any]) -> CommandResult:
     replaced = False
     for i, existing in enumerate(pools):
         if isinstance(existing, dict) and str(existing.get("pool_id", "")).lower() == pool_id.lower():
-            pools[i] = pool
+            merged = {**existing, **pool}
+            pools[i] = merged
+            pool = merged   # reflect the full record in the response
             replaced = True
             break
     if not replaced:
@@ -2082,7 +2098,14 @@ def _cmd_master_pool_upsert(payload: dict[str, Any]) -> CommandResult:
 
 
 def _cmd_master_broker_upsert(payload: dict[str, Any]) -> CommandResult:
-    """Insert or update one broker in broker_map.json, keyed by dealer_code."""
+    """Insert or update one broker in broker_map.json, keyed by dealer_code.
+
+    Same merge-on-update semantics as the pool upsert — only the fields
+    the CP form sends are overwritten; every other existing field is
+    preserved. Prevents the master-edit round-trip from silently
+    stripping fields the form doesn't know about (sebi_reg_no fallbacks,
+    historical alias rows, etc.).
+    """
     broker = payload.get("broker")
     if not isinstance(broker, dict):
         return CommandResult.failure("missing 'broker' object in payload")
@@ -2098,7 +2121,9 @@ def _cmd_master_broker_upsert(payload: dict[str, Any]) -> CommandResult:
     replaced = False
     for i, existing in enumerate(brokers):
         if isinstance(existing, dict) and str(existing.get("dealer_code", "")).lower() == dealer_code.lower():
-            brokers[i] = broker
+            merged = {**existing, **broker}
+            brokers[i] = merged
+            broker = merged
             replaced = True
             break
     if not replaced:
@@ -2138,7 +2163,13 @@ def _cmd_master_custody_upsert(payload: dict[str, Any]) -> CommandResult:
         return CommandResult.failure("custodian_dispatch.json malformed: 'custodians' is not a dict")
 
     existed = code in custodians
-    row = {k: v for k, v in custody.items() if k not in ("code", "email_to_count")}
+    # Merge over existing row so fields the CP form doesn't know about
+    # (schedule flags, custom notes, etc.) are preserved on update.
+    prev = custodians.get(code) if existed else {}
+    if not isinstance(prev, dict):
+        prev = {}
+    incoming = {k: v for k, v in custody.items() if k not in ("code", "email_to_count")}
+    row = {**prev, **incoming}
     custodians[code] = row
     cd["custodians"] = custodians
 

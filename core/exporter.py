@@ -136,6 +136,11 @@ class Exporter:
     def get_all_configured_scheme_codes(self) -> List[dict]:
         seen = set()
         result = []
+        # Pass 1: real pool mappings, with full metadata (including
+        # parent_pool_id for sub-accounts). This MUST run before the
+        # conditional-rule pass — otherwise a parent's `if_client_id` rule
+        # whose target scheme code matches a sub-account would shadow the
+        # sub-account's own entry and strip its parent linkage.
         for mapping in self.mappings:
             code = mapping.get('default_ws_scheme_code')
             if code and code not in seen:
@@ -145,22 +150,24 @@ class Exporter:
                     'display_name':   mapping.get('display_name', code),
                     'source':         mapping.get('source', ''),
                     'broker_code':    mapping.get('broker_code', ''),
+                    'pool_id':        mapping.get('id', ''),
+                    'parent_pool_id': mapping.get('parent_pool_id', ''),
+                    'is_sub_account': bool(mapping.get('is_sub_account')),
                 })
+        # Pass 2: scheme codes that only appear as conditional-rule targets.
+        for mapping in self.mappings:
             for rule in mapping.get('conditional_rules', []):
                 ccode = rule.get('then_ws_scheme_code')
                 if ccode and ccode not in seen:
                     seen.add(ccode)
-                    # Look up the target scheme's own display name from configured mappings
-                    _target_display = next(
-                        (m.get('display_name', ccode) for m in self.mappings
-                         if m.get('default_ws_scheme_code') == ccode),
-                        ccode
-                    )
                     result.append({
                         'ws_scheme_code': ccode,
-                        'display_name':   _target_display,
+                        'display_name':   ccode,
                         'source':         mapping.get('source', ''),
                         'broker_code':    mapping.get('broker_code', ''),
+                        'pool_id':        '',
+                        'parent_pool_id': '',
+                        'is_sub_account': False,
                     })
         return result
 
@@ -294,15 +301,25 @@ class Exporter:
 
     def get_coverage(self, records: List[HoldingRecord]) -> dict:
         coverage = {}
+        # Sub-account → parent linkage, used after the record loop to
+        # propagate "file present" from a parent pool to its sub-pools that
+        # share the same physical custody file (e.g. Aristos NRO Mustafa).
+        sub_to_parent_pool: dict = {}
+        pool_to_scheme:    dict = {}
         for cfg in self.get_all_configured_scheme_codes():
-            coverage[cfg['ws_scheme_code']] = {
-                'ws_scheme_code': cfg['ws_scheme_code'],
+            ws_code = cfg['ws_scheme_code']
+            coverage[ws_code] = {
+                'ws_scheme_code': ws_code,
                 'display_name':   cfg['display_name'],
                 'source':         cfg['source'],
                 'broker_code':    cfg['broker_code'],
                 'record_count':   0,
                 'covered':        False,
             }
+            if cfg.get('pool_id'):
+                pool_to_scheme[cfg['pool_id']] = ws_code
+            if cfg.get('is_sub_account') and cfg.get('parent_pool_id'):
+                sub_to_parent_pool[ws_code] = cfg['parent_pool_id']
         for rec in records:
             ws_code = self.resolve_ws_scheme_code(
                 rec.broker_code, rec.client_id, rec.source
@@ -321,4 +338,14 @@ class Exporter:
                     'record_count':   1,
                     'covered':        True,
                 }
+        # Inherit coverage: a sub-account is "covered" whenever its parent
+        # pool's custody file was loaded, even if the sub-account holds no
+        # positions today.
+        for sub_scheme, parent_pool_id in sub_to_parent_pool.items():
+            if coverage[sub_scheme]['covered']:
+                continue
+            parent_scheme = pool_to_scheme.get(parent_pool_id)
+            if parent_scheme and coverage.get(parent_scheme, {}).get('covered'):
+                coverage[sub_scheme]['covered'] = True
+                coverage[sub_scheme]['inherited_from'] = parent_scheme
         return coverage
