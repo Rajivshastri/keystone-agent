@@ -473,6 +473,12 @@ def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
         'circular', 'advisory', 'newsletter', 'mandate', 'agreement',
         'demat', 'form_', '_form', 'account statement', 'bank statement',
         'holding report', 'settlement report', 'annexure_report',
+        # Emkay's order-level annexures (G585/G587/G588/G602 per pool) carry
+        # the same trades already printed in the Combined_* NSDL CN, but in
+        # an order-by-order format pdfplumber can't parse. Skipping them
+        # avoids 4× failing pdfplumber + doomed Claude-fallback calls that
+        # push the request over Azure's 230s gateway budget on cold cache.
+        'contract_annexure', 'contract annexure',
     ]
 
     def _is_likely_cn(path: str) -> bool:
