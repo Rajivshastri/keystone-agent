@@ -322,9 +322,24 @@
       "subject_keyword": "",
       "pool_aliases": [
         {
+          "pool_id": "mysticm_kotak",
+          "alias_code": "G585",
+          "note": "Emkay UCC for Mystic Momentum Kotak"
+        },
+        {
           "pool_id": "eterna_axis",
           "alias_code": "G587",
-          "note": ""
+          "note": "Emkay UCC for Eterna Wealth Core"
+        },
+        {
+          "pool_id": "aristos_hdfc",
+          "alias_code": "G588",
+          "note": "Emkay UCC for Aristos"
+        },
+        {
+          "pool_id": "mysticm_icici",
+          "alias_code": "G602",
+          "note": "Emkay UCC for Mystic Momentum ICICI"
         }
       ]
     },

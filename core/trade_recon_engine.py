@@ -1214,10 +1214,13 @@ class TradeReconEngine:
             dealer_code   = broker.get('dealer_code', '') if broker else ''
             brok_rate     = broker.get('brokerage_rate', 0.001) if broker else 0.001
 
-            # Determine settlement date — use CN date, else T+1
-            settle_date = cn.settlement_date
-            if not settle_date:
-                settle_date = _add_working_days(cn.trade_date, 1)
+            # Settlement date is direction-dependent:
+            #   Buy  → trade date (always — never read from the CN)
+            #   Sell → CN's settlement date (T+1 next working day);
+            #          fall back to a derived T+1 only if the CN
+            #          didn't print one.
+            buy_settle  = cn.trade_date
+            sell_settle = cn.settlement_date or _add_working_days(cn.trade_date, 1)
 
             for trade in cn.trades:
                 # SCRIPT CODE: the 0096 SecurityCode column MUST be the
@@ -1253,11 +1256,10 @@ class TradeReconEngine:
                           _pool.get('mapin') or
                           cn.ucc)
 
-                # Cash settlement date:
-                # BUY → trade date (same as Transaction Date)
-                # SELL → settlement date (T+1)
                 _is_buy = trade.side.lower() == 'buy'
-                _cash_sett = cn.trade_date if _is_buy else settle_date
+                settle_date = buy_settle if _is_buy else sell_settle
+                # Cash settlement date follows the settlement date.
+                _cash_sett = settle_date
 
                 rows.append(Output0096Row(
                     broker_code           = dealer_code,
