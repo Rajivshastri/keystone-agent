@@ -607,8 +607,14 @@ class TradeReconEngine:
 
         for cn in contract_notes:
             for trade in cn.trades:
-                broker      = (self._brokers_by_sebi.get(cn.broker_sebi.upper()) or
-                               self._brokers_by_reg_no.get(cn.broker_sebi.upper()) or {})
+                # Some brokers (Emkay) print their dealer_code in the SEBI
+                # column of the NSDL xlsx. Consult dealer_code as a 3rd
+                # fallback so the lookup actually succeeds instead of
+                # silently falling through to the echo-default below.
+                _sebi_u = cn.broker_sebi.upper()
+                broker      = (self._brokers_by_sebi.get(_sebi_u) or
+                               self._brokers_by_reg_no.get(_sebi_u) or
+                               self._brokers_by_dealer.get(_sebi_u) or {})
                 dealer_code = broker.get('dealer_code', cn.broker_sebi).upper()
                 ucc         = cn.ucc.upper()
                 isin        = trade.isin
@@ -1205,9 +1211,13 @@ class TradeReconEngine:
         rows = []
 
         for cn in contract_notes:
-            # Look up broker details — try short sebi_code, then full reg number, then name
-            broker = (self._brokers_by_sebi.get(cn.broker_sebi.upper()) or
-                      self._brokers_by_reg_no.get(cn.broker_sebi.upper()) or
+            # Look up broker details — try short sebi_code, then full reg number,
+            # then dealer_code (some brokers like Emkay print this in their
+            # "SEBI" column), then fall back to a name match.
+            _sebi_u = cn.broker_sebi.upper()
+            broker = (self._brokers_by_sebi.get(_sebi_u) or
+                      self._brokers_by_reg_no.get(_sebi_u) or
+                      self._brokers_by_dealer.get(_sebi_u) or
                       self._find_broker_by_name(cn.broker_name))
             # 0096 Column A = dealer_code (the broker's internal trading code, e.g. EDEL)
             # NOT the SEBI registration number

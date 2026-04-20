@@ -49,6 +49,31 @@ def load_security_master(path: str) -> Dict[str, dict]:
     lookup: Dict[str, dict] = {}
     try:
         _ext_e = str(path).lower().rsplit(".",1)[-1]
+        if _ext_e == "csv":
+            # CSV path uses header names so column reordering in the master
+            # file doesn't silently mis-parse. Equivalent to the positional
+            # xlsx/xls reads below (col A / G / I / L).
+            import csv as _csv_e
+            with open(path, newline='', encoding='utf-8-sig') as _f_e:
+                for _rec in _csv_e.DictReader(_f_e):
+                    _ru = {k.upper().strip(): v for k, v in _rec.items()}
+                    symbolid    = str(_ru.get('SYMBOLID')   or '').strip()
+                    isin        = str(_ru.get('ISINCODE')   or '').strip()
+                    _fv         = _ru.get('FACEVAL')
+                    nse_mapping = str(_ru.get('NSEMAPPING') or '').strip()
+                    if isin and symbolid:
+                        try:
+                            face_val_f = float(_fv) if _fv not in (None, '') else 0.0
+                        except (TypeError, ValueError):
+                            face_val_f = 0.0
+                        lookup[isin] = {
+                            'symbolid':   symbolid,
+                            'face_value': face_val_f,
+                            'is_etf':     bool(nse_mapping),
+                        }
+            _etf_count = sum(1 for v in lookup.values() if v.get('is_etf'))
+            logger.info(f"Security master loaded: {len(lookup):,} securities ({_etf_count} flagged as ETF via NSEMAPPING)")
+            return lookup
         if _ext_e == "xls":
             import xlrd as _xlrd_e
             _wb_e = _xlrd_e.open_workbook(path)
