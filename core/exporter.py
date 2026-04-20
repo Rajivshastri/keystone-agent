@@ -37,8 +37,13 @@ logger = logging.getLogger(__name__)
 def load_security_master(path: str) -> Dict[str, dict]:
     """
     Load Z13_SecurityDetail.xlsx.
-    Returns {isin: {'symbolid': str, 'face_value': float}}
-    Col A = SYMBOLID, Col G = ISINCODE, Col I = FACEVAL
+    Returns {isin: {'symbolid': str, 'face_value': float, 'is_etf': bool}}
+    Col A = SYMBOLID, Col G = ISINCODE, Col I = FACEVAL, Col L = NSEMAPPING
+
+    NSEMAPPING (col L) carries the NSE ticker. WS populates it for every
+    exchange-listed security — including ETFs with INF ISINs — and leaves
+    it blank for AMC-only mutual fund units. That gives us a clean ETF
+    discriminator independent of how the security's name happens to read.
     """
     logger.info(f"Loading security master: {os.path.basename(path)}")
     lookup: Dict[str, dict] = {}
@@ -55,22 +60,37 @@ def load_security_master(path: str) -> Dict[str, dict]:
         for row in _rows_e:
             if not row or row[0] is None:
                 continue
-            symbolid = str(row[0] or '').strip()
-            isin     = str(row[6] or '').strip()
-            face_val = row[8]
+            symbolid    = str(row[0] or '').strip()
+            isin        = str(row[6] or '').strip()
+            face_val    = row[8]
+            nse_mapping = str(row[11] or '').strip() if len(row) > 11 else ''
             if isin and symbolid:
                 lookup[isin] = {
                     'symbolid':   symbolid,
                     'face_value': float(face_val) if face_val else 0.0,
+                    'is_etf':     bool(nse_mapping),
                 }
         if _ext_e == "xls":
             _wb_e.release_resources()
         else:
             _wb_ox.close()
-        logger.info(f"Security master loaded: {len(lookup):,} securities")
+        _etf_count = sum(1 for v in lookup.values() if v.get('is_etf'))
+        logger.info(f"Security master loaded: {len(lookup):,} securities ({_etf_count} flagged as ETF via NSEMAPPING)")
     except Exception as e:
         logger.error(f"Failed to load security master: {e}", exc_info=True)
     return lookup
+
+
+def load_etf_isins(path: str) -> set:
+    """
+    Return the set of ISINs flagged as ETF in Z13_SecurityDetail.xlsx.
+
+    An ISIN is classified as ETF iff col L (NSEMAPPING) is populated.
+    Called by holdings-recon and trade-recon to distinguish exchange-traded
+    ETFs (INF ISIN + NSE ticker) from AMC-only mutual fund units.
+    """
+    _m = load_security_master(path)
+    return {isin for isin, info in _m.items() if info.get('is_etf')}
 
 
 def load_kotak_custody(path: str) -> Dict[Tuple[str, str], str]:

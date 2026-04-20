@@ -311,6 +311,19 @@ def run_holdings_recon(
     except Exception as _e:
         log_fn(f"Prev custody snapshot failed ({_e}) — annotation disabled")
 
+    # Build ETF ISIN set from Z8_SecurityDetail (NSEMAPPING col). Engine uses
+    # this to distinguish exchange-traded ETFs from AMC MF units — both carry
+    # INF ISINs but only ETFs should bypass the MF timing-lag branch.
+    etf_isins: set = set()
+    try:
+        _sec_master_p = fm.get_security_master(date_str)
+        if _sec_master_p:
+            from core.exporter import load_etf_isins as _load_etf
+            etf_isins = _load_etf(_sec_master_p)
+            log_fn(f"Security master: {len(etf_isins)} ETF ISIN(s) flagged via NSEMAPPING")
+    except Exception as _e:
+        log_fn(f"ETF ISIN load failed ({_e}) — falling back to name heuristic")
+
     out_path, warnings, results = engine.run(
         records=records,
         ws_holdings_path=ws_holdings_path,
@@ -322,6 +335,7 @@ def run_holdings_recon(
         pool_mapin_codes=pool_mapin_codes,
         prev_custody=prev_snapshot,
         prev_date_str=prev_date,
+        etf_isins=etf_isins,
     )
 
     return HoldingsReconResult(

@@ -413,7 +413,8 @@ class ReconEngine:
             kotak_custody_path: Optional[str] = None,
             pool_mapin_codes: set = None,
             prev_custody: Optional[Dict[Tuple[str, str], dict]] = None,
-            prev_date_str: Optional[str] = None) -> Tuple[str, List[str]]:
+            prev_date_str: Optional[str] = None,
+            etf_isins: Optional[set] = None) -> Tuple[str, List[str]]:
         """
         Run the full reconciliation and write the Excel report.
 
@@ -520,12 +521,24 @@ class ReconEngine:
         all_keys = set(cust_lookup.keys()) | set(ws_holdings.keys())
 
         # ── MF (non-ETF) identification ──────────────────────────────────
-        # Mutual fund ISINs start with "INF" and don't have "ETF" in the name.
-        # MF units have T+2/3 settlement lag — positions may be in WS before
-        # custody, or in custody before WS (for redemptions).
+        # All Indian fund units — both AMC-only MFs and exchange-traded ETFs —
+        # carry ISINs starting with "INF". ETFs settle T+1 on the exchange and
+        # should NOT get the MF timing-lag allowance; AMC MFs settle T+2/3 and
+        # should. The discriminator is Z8's NSEMAPPING column (passed in as
+        # etf_isins): populated for ETFs, empty for AMC MF units.
+        #
+        # Fallback to the legacy name-contains-"ETF" check when Z8 is missing
+        # or the ISIN isn't listed there — covers brand-new ETFs that haven't
+        # yet landed in the master file.
+        _etf_isins_u = {i.upper() for i in (etf_isins or set())}
         def _is_mf(isin: str, sec_name: str = '') -> bool:
-            return (isin.upper().startswith('INF')
-                    and 'ETF' not in (sec_name or '').upper())
+            u = (isin or '').upper()
+            if not u.startswith('INF'):
+                return False
+            if u in _etf_isins_u:
+                return False   # Z8 says it's an ETF
+            # No Z8 signal — fall back to name heuristic
+            return 'ETF' not in (sec_name or '').upper()
 
         # Build set of MF ISINs with recent trades (within holding_date to T+2).
         # Used to explain MF WS-Only and Custody-Only positions.

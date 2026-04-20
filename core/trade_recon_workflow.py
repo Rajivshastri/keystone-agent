@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # Loading Z8_SecurityDetail.xlsx (7 MB, ~150 MB in memory) on every recon run
 # OOM-kills the gunicorn worker on B1. Cache keyed by (path, mtime) so it is
 # parsed once and reused until the file is replaced with a newer version.
-_Z8_CACHE: dict = {}   # key: (str(path), mtime_float) → (sec_name_to_isin, isin_to_nse_ticker)
+_Z8_CACHE: dict = {}   # key: (str(path), mtime_float) → (sec_name_to_isin, isin_to_nse_ticker, etf_isins)
 
 
 class TradeReconResult:
@@ -240,17 +240,8 @@ def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
 
     ws_orders, isin_to_instr = _load_ws_trade_trans(ws_tt_path)
 
-    # Filter out INF-prefixed ISINs (mutual fund units, not equity trades)
-    _before = len(ws_orders)
-    ws_orders = [o for o in ws_orders
-                 if not (
-                     str(o.get('ISINCODE', '') or '').upper().startswith('INF')
-                     and 'ETF' not in str(o.get('INSTRUMENT_NAME', '') or '').upper()
-                 )]
-    if len(ws_orders) < _before:
-        log_fn(f"WS OrderLog: filtered {_before - len(ws_orders)} non-ETF INF ISIN order(s) "
-               f"(mutual funds); {len(ws_orders)} order(s) remain")
-    log_fn(f"WS OrderLog: {len(ws_orders)} authorized orders, {len(isin_to_instr)} ISIN mappings")
+    log_fn(f"WS OrderLog: {len(ws_orders)} orders loaded, {len(isin_to_instr)} ISIN mappings "
+           f"(INF-ISIN filter runs after Z8 loads)")
 
     # Warn if the OrderLog contains orders from a different date
     if ws_orders:
@@ -269,22 +260,33 @@ def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
     sec_master_path = fm.get_security_master(date_str)
     sec_name_to_isin   = {}
     isin_to_nse_ticker = {}
+    # Every ISIN with NSEMAPPING populated is exchange-listed — the ETF
+    # discriminator for INF-prefixed ISINs (see OrderLog filter below).
+    etf_isins: set = set()
 
     if sec_master_path:
         try:
             import csv as _csv
             _cache_key = (str(sec_master_path), os.path.getmtime(sec_master_path))
             if _cache_key in _Z8_CACHE:
-                sec_name_to_isin, isin_to_nse_ticker = _Z8_CACHE[_cache_key]
+                _cached = _Z8_CACHE[_cache_key]
+                # Older cache entries are 2-tuples (sni, itn). Treat as
+                # hit-with-no-etf-set so the first fresh load refills.
+                if len(_cached) == 3:
+                    sec_name_to_isin, isin_to_nse_ticker, etf_isins = _cached
+                else:
+                    sec_name_to_isin, isin_to_nse_ticker = _cached
                 log_fn(f"Security master: loaded from cache "
                        f"({len(sec_name_to_isin)} name/ticker mappings, "
-                       f"{len(isin_to_nse_ticker)} NSE tickers)")
+                       f"{len(isin_to_nse_ticker)} NSE tickers, "
+                       f"{len(etf_isins)} ETF ISINs)")
             else:
                 _added = 0
                 _skipped_inactive = 0
                 _equity_keys: set = set()
                 _sni: dict = {}
                 _itn: dict = {}
+                _etf: set = set()
 
                 def _put(key, isin, is_eq):
                     if key in _equity_keys:
@@ -311,6 +313,7 @@ def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
                         _put(_norm_name(_name), _isin, _is_eq)
                     if _nse_tick:
                         _put(_nse_tick.upper(), _isin, _is_eq)
+                        _etf.add(_isin.upper())
                         if _is_eq:
                             isin_to_instr.setdefault(_isin, _nse_tick)
                             if _isin not in _itn:
@@ -348,11 +351,13 @@ def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
 
                 sec_name_to_isin   = _sni
                 isin_to_nse_ticker = _itn
-                _Z8_CACHE[_cache_key] = (sec_name_to_isin, isin_to_nse_ticker)
+                etf_isins          = _etf
+                _Z8_CACHE[_cache_key] = (sec_name_to_isin, isin_to_nse_ticker, etf_isins)
                 log_fn(f"Security master: {_added} active securities loaded, "
                        f"{_skipped_inactive} inactive skipped, "
                        f"{len(sec_name_to_isin)} total name/ticker mappings, "
-                       f"{len(isin_to_nse_ticker)} NSE tickers")
+                       f"{len(isin_to_nse_ticker)} NSE tickers, "
+                       f"{len(etf_isins)} ETF ISINs (NSEMAPPING populated)")
         except Exception as _e:
             log_fn(f"Security master load warning: {_e}", 'warning')
     else:
@@ -381,8 +386,10 @@ def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
                             _ru = {k.upper().strip(): v for k, v in _row.items()}
                             _isin = str(_ru.get('ISINCODE') or '').strip()
                             _tick = str(_ru.get('NSEMAPPING') or '').strip()
-                            if _isin and _tick and _isin not in isin_to_nse_ticker:
-                                isin_to_nse_ticker[_isin] = _tick
+                            if _isin and _tick:
+                                if _isin not in isin_to_nse_ticker:
+                                    isin_to_nse_ticker[_isin] = _tick
+                                etf_isins.add(_isin.upper())
                 else:
                     import openpyxl as _opx
                     _wb = _opx.load_workbook(_cand, read_only=True, data_only=True)
@@ -395,13 +402,36 @@ def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
                         _d = {_hdr[i]: str(v or '') for i, v in enumerate(_r) if i < len(_hdr)}
                         _isin = _d.get('ISINCODE', '').strip()
                         _tick = _d.get('NSEMAPPING', '').strip()
-                        if _isin and _tick and _isin not in isin_to_nse_ticker:
-                            isin_to_nse_ticker[_isin] = _tick
+                        if _isin and _tick:
+                            if _isin not in isin_to_nse_ticker:
+                                isin_to_nse_ticker[_isin] = _tick
+                            etf_isins.add(_isin.upper())
                     _wb.close()
-                log_fn(f"Z8 fallback load: {len(isin_to_nse_ticker)} NSE tickers from {_cand.name}")
+                log_fn(f"Z8 fallback load: {len(isin_to_nse_ticker)} NSE tickers, "
+                       f"{len(etf_isins)} ETF ISINs from {_cand.name}")
                 break
             except Exception as _e2:
                 log_fn(f"Z8 fallback read error on {_cand}: {_e2}", 'warning')
+
+    # ── Filter WS OrderLog: drop AMC-MF orders, keep ETFs ────────────────── #
+    # An ISIN is an AMC mutual fund iff it starts with INF AND Z8 does NOT
+    # mark it as an ETF (NSEMAPPING blank). When Z8 is unavailable we fall
+    # back to the legacy name-contains-"ETF" check so new listings still
+    # resolve correctly.
+    _etf_isins_u = {i.upper() for i in etf_isins}
+    def _is_amc_mf(_o):
+        _isin = str(_o.get('ISINCODE', '') or '').upper()
+        if not _isin.startswith('INF'):
+            return False
+        if _isin in _etf_isins_u:
+            return False
+        return 'ETF' not in str(_o.get('INSTRUMENT_NAME', '') or '').upper()
+
+    _before = len(ws_orders)
+    ws_orders = [o for o in ws_orders if not _is_amc_mf(o)]
+    if len(ws_orders) < _before:
+        log_fn(f"WS OrderLog: filtered {_before - len(ws_orders)} INF-ISIN MF order(s); "
+               f"{len(ws_orders)} order(s) remain")
 
     # ── CBD client→Mapin mapping ──────────────────────────────────────────── #
     cbd_path = fm.get_client_bank_details(date_str)
