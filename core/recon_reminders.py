@@ -146,3 +146,19 @@ class ReconReminderStore:
         with self._lock:
             data = self._load()
             return list(data['pending'].values())
+
+    def clear_all(self) -> int:
+        """Remove every pending reminder. Returns the count cleared.
+
+        Operator-initiated bulk wipe — fired by the CP's "Clear all
+        reminders" button via the reminder_clear_all command. Safe to
+        call on a missing/empty store; returns 0 in that case.
+        """
+        with self._lock:
+            data = self._load()
+            cleared = len(data.get('pending', {}))
+            data['pending'] = {}
+            self._save(data)
+        if cleared:
+            logger.info(f'recon_reminders: cleared {cleared} entrie(s) via clear_all')
+        return cleared

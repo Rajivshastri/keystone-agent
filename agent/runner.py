@@ -465,6 +465,9 @@ def execute_command(cmd_kind: str, payload: dict[str, Any]) -> CommandResult:
         # P3a: firing due reminders from the local queue
         if cmd_kind == "reminder_check":
             return _cmd_reminder_check(payload)
+        # P3a: operator-initiated bulk clear of the local reminder queue
+        if cmd_kind == "reminder_clear_all":
+            return _cmd_reminder_clear_all(payload)
         # P3b: operator-entered bank annotations -> final email
         if cmd_kind == "bank_finalize":
             return _cmd_bank_finalize(payload)
@@ -616,6 +619,32 @@ def _cmd_reminder_check(payload: dict[str, Any]) -> CommandResult:
     # Any fired reminder counts as a success even if others failed —
     # the control plane can see the error detail in the result payload.
     return CommandResult.success(summary)
+
+
+def _cmd_reminder_clear_all(payload: dict[str, Any]) -> CommandResult:
+    """Operator-initiated bulk wipe of the local reminder queue.
+
+    Used when the CP operator clicks "Clear all reminders" on the agent
+    detail page. Removes every pending entry from recon_reminders.json —
+    no emails are sent, and the next reminder_check tick sees an empty
+    queue. Idempotent: if the file doesn't exist yet this still reports
+    success with cleared=0.
+
+    Payload is ignored. Returns ``{cleared: N}`` where N is the number
+    of entries removed.
+    """
+    settings = load_settings()
+    reminder_path = Path(settings.workdir) / "data" / "recon_reminders.json"
+    from core.recon_reminders import ReconReminderStore
+
+    store = ReconReminderStore(reminder_path)
+    try:
+        cleared = store.clear_all()
+    except Exception as rem_err:  # noqa: BLE001
+        return CommandResult.failure(
+            f"clear_all failed: {type(rem_err).__name__}: {rem_err}",
+        )
+    return CommandResult.success({"cleared": cleared})
 
 
 def _cmd_push_break_detail(payload: dict[str, Any]) -> CommandResult:
