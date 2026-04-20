@@ -1298,12 +1298,30 @@ class TradeReconEngine:
         return rows
 
     def _find_broker_by_name(self, name: str) -> Optional[dict]:
+        """Name-based broker lookup. Applies the same canonical comparison
+        that _resolve_broker uses (strips LTD/LIMITED/PVT/PRIVATE and
+        non-alphanumerics) so a CN printed as "EMKAY GLOBAL FINANCIAL
+        SERVICES LTD" still resolves against a broker_map entry named
+        "EMKAY GLOBAL FINANCIAL SERVICES LIMITED".
+        """
         if not name:
             return None
-        name_up = name.upper()
+        name_up    = name.upper()
+        name_canon = self._canon_name(name_up)
         for b in self._brokers_by_dealer.values():
-            if b['name'].upper() in name_up or name_up in b['name'].upper():
+            b_name = (b.get('name') or '').upper()
+            # Fast path — plain substring either way.
+            if b_name and (b_name in name_up or name_up in b_name):
                 return b
+            # Canonical path — strips Ltd/Limited/Pvt/Private + punctuation.
+            if name_canon and b_name:
+                b_canon = self._canon_name(b_name)
+                if b_canon and (
+                    b_canon == name_canon
+                    or b_canon in name_canon
+                    or name_canon in b_canon
+                ):
+                    return b
         return None
 
     # ── Check 5 ───────────────────────────────────────────────────────────── #
