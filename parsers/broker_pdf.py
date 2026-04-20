@@ -30,6 +30,36 @@ ANTHROPIC_API = 'https://api.anthropic.com/v1/messages'
 CLAUDE_MODEL   = 'claude-sonnet-4-20250514'
 
 
+# STT is printed two different ways on CNs:
+#   - long form "Securities Transaction Tax ... 235.00"  (Equirus / IIFL / Haitong)
+#   - short form "STT 235.00" on its own line           (Emkay)
+# This combined regex matches either; group 1 OR group 2 holds the amount.
+_STT_RE = re.compile(
+    r'(?:Securit\w*\s+Tr[xa]\w*\s+Tax[^0-9]*([\d,]+\.?\d*))'
+    r'|(?:(?:^|\n)\s*STT\s+([\d,]+\.?\d*))',
+    re.IGNORECASE,
+)
+
+
+def _parse_stt_amount(ctx: str) -> float:
+    """Extract STT from a CN's tax/levy section context. Returns 0.0 if absent.
+
+    Handles both "Securities Transaction Tax" long form and the bare "STT"
+    line label that Emkay's contract note uses. Silently degrades on parse
+    failure so upstream callers always get a clean float.
+    """
+    if not ctx:
+        return 0.0
+    m = _STT_RE.search(ctx)
+    if not m:
+        return 0.0
+    raw = m.group(1) or m.group(2) or ''
+    try:
+        return float(raw.replace(',', ''))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 # ── Data classes ──────────────────────────────────────────────────────────── #
 
 @dataclass
@@ -719,11 +749,7 @@ def _parse_trade_table(text: str) -> List[ContractNoteTrade]:
             wap       = float(m0.group(5).replace(',', ''))
             brok_rate = float(m0.group(7).replace(',', ''))
             context0  = text[max(0, m0.start()-50):m0.end()+300]
-            stt_m0    = re.search(r'Securit\w*\s+Tr[xa]\w*\s+Tax[^0-9]*([\d,]+\.?\d*)', context0, re.IGNORECASE)
-            stt_raw0  = 0.0
-            if stt_m0:
-                try: stt_raw0 = float(stt_m0.group(1).replace(',', ''))
-                except (ValueError, ZeroDivisionError): pass
+            stt_raw0  = _parse_stt_amount(context0)
             exch0 = 'BSE' if 'BSE' in context0.upper() and 'NSE' not in context0.upper() else 'NSE'
             trades.append(ContractNoteTrade(
                 isin=m0.group(1).strip(), security_name=sec_name, side=side,
@@ -821,16 +847,8 @@ def _parse_trade_table(text: str) -> List[ContractNoteTrade]:
                     side = _wap_side
 
             # STT — look nearby for "Securities Transaction Tax"
-            stt_total = 0.0
-            stt_m = re.search(
-                r'Securit\w*\s+Tr[xa]\w*\s+Tax[^0-9]*(\d[\d,]*\.?\d*)',
-                context, re.IGNORECASE
-            )
-            if stt_m:
-                try:
-                    stt_total = float(stt_m.group(1).replace(',', ''))
-                except ValueError:
-                    pass
+            # STT — long-form "Securities Transaction Tax" or bare "STT"
+            stt_total = _parse_stt_amount(context)
 
             # Exchange
             exchange = 'BSE' if 'BSE' in context.upper() and 'NSE' not in context.upper() else 'NSE'
@@ -889,8 +907,7 @@ def _parse_trade_table(text: str) -> List[ContractNoteTrade]:
             total    = float(m.group(7).replace(',', ''))
             context  = text[max(0, m.start()-100):m.end()+500]
             side     = 'Sell' if re.search(r'\bSell\b', m.group(0), re.IGNORECASE) else 'Buy'
-            stt_m    = re.search(r'Securit\w*\s+Tr[xa]\w*\s+Tax[^0-9]*([\d,]+\.?\d*)', context, re.IGNORECASE)
-            stt_raw  = float(stt_m.group(1).replace(',', '')) if stt_m else 0.0
+            stt_raw  = _parse_stt_amount(context)
             exchange = 'BSE' if 'BSE' in context.upper() and 'NSE' not in context.upper() else 'NSE'
             trades.append(ContractNoteTrade(
                 isin=isin, security_name=sec_name, side=side, qty=qty, wap=wap,
@@ -912,11 +929,7 @@ def _parse_trade_table(text: str) -> List[ContractNoteTrade]:
             total    = float(m.group(6).replace(',', ''))
             context  = text[max(0, m.start()-100):m.end()+500]
             side     = 'Sell' if re.search(r'\bSell\b|\bSL\+', context, re.IGNORECASE) else 'Buy'
-            stt_m    = re.search(r'Securit\w*\s+Tr[xa]\w*\s+Tax[^0-9]*([\d,]+\.?\d*)', context, re.IGNORECASE)
-            stt_raw  = 0.0
-            if stt_m:
-                try: stt_raw = float(stt_m.group(1).replace(',', ''))
-                except (ValueError, ZeroDivisionError): pass
+            stt_raw  = _parse_stt_amount(context)
             exchange = 'BSE' if 'BSE' in context.upper() and 'NSE' not in context.upper() else 'NSE'
             trades.append(ContractNoteTrade(
                 isin=isin, security_name=sec_name, side=side, qty=qty, wap=wap,
@@ -995,12 +1008,8 @@ def _parse_trade_table(text: str) -> List[ContractNoteTrade]:
                 _has_sell = bool(re.search(r'\bSELL\b', _post, re.IGNORECASE))
                 _has_buy  = bool(re.search(r'\bBUY\b', _post, re.IGNORECASE))
                 _side = 'Sell' if _has_sell and not _has_buy else 'Buy'
-            # STT
-            _stt = 0.0
-            _stt_m = re.search(r'Securit\w*\s+Tr[xa]\w*\s+Tax[^0-9]*([\d,]+\.?\d*)', _ctx, re.IGNORECASE)
-            if _stt_m:
-                try: _stt = float(_stt_m.group(1).replace(',', ''))
-                except ValueError: pass
+            # STT — long-form "Securities Transaction Tax" or bare "STT"
+            _stt = _parse_stt_amount(_ctx)
             _exch = 'BSE' if 'BSE' in _ctx.upper() and 'NSE' not in _ctx.upper() else 'NSE'
             trades.append(ContractNoteTrade(
                 isin=_isin, security_name=_sec_name, side=_side,
@@ -1050,8 +1059,7 @@ def _parse_trade_table(text: str) -> List[ContractNoteTrade]:
             total    = float(m.group(7).replace(',', ''))
             context  = text[max(0, m.start()-100):m.end()+500]
             side     = 'Sell' if re.search(r'\bSell\b', m.group(0), re.IGNORECASE) else 'Buy'
-            stt_m    = re.search(r'Securit\w*\s+Tr[xa]\w*\s+Tax[^0-9]*([\d,]+\.?\d*)', context, re.IGNORECASE)
-            stt_raw  = float(stt_m.group(1).replace(',', '')) if stt_m else 0.0
+            stt_raw  = _parse_stt_amount(context)
             exchange = 'BSE' if 'BSE' in context.upper() and 'NSE' not in context.upper() else 'NSE'
             trades = [t for t in trades if t.isin != isin]
             trades.append(ContractNoteTrade(
@@ -1076,11 +1084,7 @@ def _parse_trade_table(text: str) -> List[ContractNoteTrade]:
             total    = float(m.group(6).replace(',', ''))
             context  = text[max(0, m.start()-100):m.end()+500]
             side     = 'Sell' if re.search(r'\bSell\b|\bSL\+', context, re.IGNORECASE) else 'Buy'
-            stt_m    = re.search(r'Securit\w*\s+Tr[xa]\w*\s+Tax[^0-9]*([\d,]+\.?\d*)', context, re.IGNORECASE)
-            stt_raw  = 0.0
-            if stt_m:
-                try: stt_raw = float(stt_m.group(1).replace(',', ''))
-                except (ValueError, ZeroDivisionError): pass
+            stt_raw  = _parse_stt_amount(context)
             exchange = 'BSE' if 'BSE' in context.upper() and 'NSE' not in context.upper() else 'NSE'
             # Remove any bad Pass 1.5 match for this ISIN before adding the correct one
             trades = [t for t in trades if t.isin != isin]
