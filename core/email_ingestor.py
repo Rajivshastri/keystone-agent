@@ -104,7 +104,7 @@ class EmailIngestor:
             sources:            List of source config dicts from sources.json
             file_manager:       FileManager instance
             log_callback:       Optional callable(msg) for real-time logging
-            dt_start_override:  Optional datetime — overrides the default 72h lookback
+            dt_start_override:  Optional datetime — overrides the default lookback window
             dt_end_override:    Optional datetime — overrides the default target+2d end
 
         Returns:
@@ -136,9 +136,9 @@ class EmailIngestor:
             f"(~{_window_hours}h)")
         log(f"Matching by sender address and zip filename prefix only")
 
-        # Fetch all messages in the window using pagination. The default
-        # window is 72h but callers can override via dt_start_override/
-        # dt_end_override (the incremental fetch path uses 30-min overlap).
+        # Fetch all messages in the window using pagination. Callers can
+        # override the default lookback via dt_start_override / dt_end_override
+        # (the incremental fetch path uses a 30-min overlap).
         # Graph API max per page is 100 — follow @odata.nextLink until exhausted
         first_url = (f"{GRAPH_BASE}/users/{self.mailbox}/messages"
                      f"?$filter=receivedDateTime ge {dt_start_s} "
@@ -568,7 +568,7 @@ class EmailIngestor:
         the incremental path used by scheduled and manual fetches.
 
         If `since` is None (admin override or first-ever fetch), falls back to
-        the legacy 3-day pivot stepping with 72-hour windows per pivot.
+        per-date pivot stepping across the full range.
 
         Returns a combined list of result dicts (same format as fetch_for_date).
         """
@@ -1346,10 +1346,11 @@ class EmailIngestor:
 
     def archive_for_date(self, date_str: str, sources: List[dict],
                          archive_base_dir: str,
-                         log_callback=None) -> dict:
+                         log_callback=None,
+                         since: Optional[str] = None) -> dict:
         """
         Archive all emails (body + attachments) from configured sender addresses
-        for the 72hr window around date_str.
+        for the lookback window around date_str.
 
         Versioning strategy:
           - If a file already exists in the archive, rename the OLD file with a
@@ -1385,10 +1386,20 @@ class EmailIngestor:
             log("Archive: no sender addresses configured — skipping")
             return {}
 
-        # Fetch the same 72hr window
+        # Scope the archive pass to the same window the fetch used. If the
+        # caller passed `since`, start there (minus a 30-min overlap to match
+        # the fetch's jitter budget). Otherwise fall back to a 1-day lookback
+        # around date_str.
         target_dt  = datetime.strptime(date_str, '%Y-%m-%d')
         dt_end     = target_dt + timedelta(days=2)
-        dt_start   = target_dt - timedelta(hours=72)
+        if since:
+            try:
+                since_dt = datetime.fromisoformat(since.replace('Z', ''))
+                dt_start = since_dt - timedelta(minutes=30)
+            except Exception:
+                dt_start = target_dt - timedelta(days=1)
+        else:
+            dt_start = target_dt - timedelta(days=1)
         dt_start_s = dt_start.strftime('%Y-%m-%dT%H:%M:%SZ')
         dt_end_s   = dt_end.strftime('%Y-%m-%dT%H:%M:%SZ')
 

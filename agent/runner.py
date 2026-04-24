@@ -1662,13 +1662,13 @@ def _run_fetch_emails(job: PollJob) -> RunPush:
     Two modes:
 
     1. **Manual / multi-day** — operator dispatches with date_from + date_to.
-       Uses the full 72-hour-per-pivot stepping so every day in the range
-       is covered. No `since` logic — operator explicitly asked for a range.
+       Uses per-date pivot stepping so every day in the range is covered.
+       No `since` logic — operator explicitly asked for a range.
 
     2. **Scheduled / single-date** — scheduler creates a job with just {date}.
        Uses the incremental `since` path: a single Graph query from
        "30 minutes before last successful fetch" to "target + 2 days".
-       Fast, narrow, no redundant pages. Falls back to 72-hour lookback
+       Fast, narrow, no redundant pages. Falls back to a per-date lookback
        on first-ever fetch (no `since` saved yet).
 
     After a successful fetch, saves the current UTC timestamp as

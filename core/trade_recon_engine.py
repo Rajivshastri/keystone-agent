@@ -353,7 +353,7 @@ class TradeReconEngine:
         summary.warnings.extend(self._c1_warnings(summary.check1_results))
 
         # ── Filter CNs to the reconciliation date ────────────────────────
-        # The 72-hour email fetch window pulls CNs from multiple days.
+        # The email lookback window can surface CNs from multiple days.
         # Only CNs matching the recon date are relevant for Check 2 and 0096.
         # CNs from other dates are preserved separately for historical reference.
         from datetime import datetime
@@ -374,7 +374,7 @@ class TradeReconEngine:
             other_dates = sorted(set(cn.trade_date for cn in contract_notes_other if cn.trade_date))
             summary.warnings.append(
                 f"Excluded {len(contract_notes_other)} CNs from other dates "
-                f"({', '.join(other_dates)}) — these are from the 72-hour email fetch window."
+                f"({', '.join(other_dates)}) — these came in via the email lookback window."
             )
             logger.info(
                 f"Date filter: {len(contract_notes_today)} CNs match {recon_date_fmt}, "
