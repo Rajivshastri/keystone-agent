@@ -468,6 +468,9 @@ def execute_command(cmd_kind: str, payload: dict[str, Any]) -> CommandResult:
         # P3a: operator-initiated bulk clear of the local reminder queue
         if cmd_kind == "reminder_clear_all":
             return _cmd_reminder_clear_all(payload)
+        # Power-user per-reminder cancel (by type+date)
+        if cmd_kind == "reminder_clear_one":
+            return _cmd_reminder_clear_one(payload)
         # P3b: operator-entered bank annotations -> final email
         if cmd_kind == "bank_finalize":
             return _cmd_bank_finalize(payload)
@@ -645,6 +648,31 @@ def _cmd_reminder_clear_all(payload: dict[str, Any]) -> CommandResult:
             f"clear_all failed: {type(rem_err).__name__}: {rem_err}",
         )
     return CommandResult.success({"cleared": cleared})
+
+
+def _cmd_reminder_clear_one(payload: dict[str, Any]) -> CommandResult:
+    """Operator-initiated cancel of a single pending reminder.
+
+    Payload: ``{recon_type: str, date: str}``. Removes that one entry
+    from the local queue; no emails are sent. Idempotent — calling with
+    a key that's already gone returns success with found=False.
+    """
+    recon_type = str(payload.get("recon_type", "")).strip()
+    date_str = str(payload.get("date", "")).strip()
+    if not recon_type or not date_str:
+        return CommandResult.failure("reminder_clear_one needs recon_type and date")
+    settings = load_settings()
+    reminder_path = Path(settings.workdir) / "data" / "recon_reminders.json"
+    from core.recon_reminders import ReconReminderStore
+
+    store = ReconReminderStore(reminder_path)
+    try:
+        found = store.clear_one(recon_type, date_str)
+    except Exception as rem_err:  # noqa: BLE001
+        return CommandResult.failure(
+            f"clear_one failed: {type(rem_err).__name__}: {rem_err}",
+        )
+    return CommandResult.success({"found": found, "recon_type": recon_type, "date": date_str})
 
 
 def _cmd_push_break_detail(payload: dict[str, Any]) -> CommandResult:

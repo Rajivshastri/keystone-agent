@@ -344,13 +344,17 @@ class PollLoop:
             disk_free = _disk_free_mb(settings.workdir or ".")
         except Exception:
             disk_free = None
+        reminders_snapshot = _reminders_snapshot(settings)
         try:
             self._client.health(
                 HealthPing(
                     version=__version__,
                     disk_free_mb=disk_free,
                     pending_jobs=get_outbox().count(),
-                    metrics={"local_time": datetime.now(timezone.utc).isoformat()},
+                    metrics={
+                        "local_time": datetime.now(timezone.utc).isoformat(),
+                        "reminders": reminders_snapshot,
+                    },
                 )
             )
         except TransportError as e:
@@ -365,3 +369,30 @@ def _disk_free_mb(path: str) -> int | None:
     except OSError:
         return None
     return int(free // (1024 * 1024))
+
+
+def _reminders_snapshot(settings: AgentSettings) -> list[dict]:
+    """Return a compact summary of pending reminders for the heartbeat.
+
+    Empty list when the store file is missing or unreadable — keeps the
+    ping payload resilient.
+    """
+    try:
+        from pathlib import Path as _Path
+        from core.recon_reminders import ReconReminderStore
+
+        reminder_path = _Path(settings.workdir or ".") / "data" / "recon_reminders.json"
+        store = ReconReminderStore(reminder_path)
+        return [
+            {
+                "recon_type":      e.get("type", ""),
+                "date":            e.get("date", ""),
+                "reminder_count":  int(e.get("reminder_count", 0) or 0),
+                "last_reminder_at": e.get("last_reminder_at"),
+                "next_due_at":     e.get("next_due_at"),
+                "initial_sent_at": e.get("initial_sent_at"),
+            }
+            for e in store.list_pending()
+        ]
+    except Exception:  # noqa: BLE001
+        return []
