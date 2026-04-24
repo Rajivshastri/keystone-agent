@@ -239,6 +239,27 @@ class TradeReconEngine:
             for b in broker_map.get('brokers', [])
             if b.get('sebi_reg_no')
         }
+        # Name index — fallback when the CN PDF has the broker name in a
+        # footer but the SEBI regn is in a header pdfplumber can't read
+        # (e.g. Emkay). Maps multiple broker-name variants to the same
+        # broker dict so partial matches work. We index each broker under
+        # a canonicalised form with LTD/LIMITED/PRIVATE/PVT stripped.
+        import re as _re
+        def _canon_name(n: str) -> str:
+            n = (n or '').upper().strip()
+            n = _re.sub(r'\bPRIVATE\b|\bPVT\.?\b', '', n)
+            n = _re.sub(r'\bLIMITED\b|\bLTD\.?\b', '', n)
+            n = _re.sub(r'[^A-Z0-9 ]', ' ', n)
+            return _re.sub(r'\s+', ' ', n).strip()
+        self._canon_name = _canon_name
+        self._brokers_by_name = {}
+        for b in broker_map.get('brokers', []):
+            _n = (b.get('name') or '').upper().strip()
+            if _n:
+                self._brokers_by_name[_n] = b
+                _c = _canon_name(_n)
+                if _c:
+                    self._brokers_by_name[_c] = b
         # Index pool map by dealer_account
         self._pools = {
             p['dealer_account'].upper(): p
@@ -605,16 +626,38 @@ class TradeReconEngine:
         cn_no_ucc:    Dict[Tuple, List[ContractNote]] = defaultdict(list)  # (dealer, isin, side)
         cn_no_isin:   Dict[Tuple, List[ContractNote]] = defaultdict(list)  # (ucc, dealer, side)
 
+        def _resolve_broker(cn) -> dict:
+            # Some brokers (Emkay) print their dealer_code in the "SEBI Regn"
+            # column of the NSDL xlsx instead of either the short sebi_code
+            # or the full registration number. Consult dealer_code too so the
+            # resolution succeeds on its own merits (not by falling through
+            # to the `or cn.broker_sebi` display fallback below).
+            _sebi_u = cn.broker_sebi.upper()
+            b = (self._brokers_by_sebi.get(_sebi_u) or
+                 self._brokers_by_reg_no.get(_sebi_u) or
+                 self._brokers_by_dealer.get(_sebi_u))
+            if b:
+                return b
+            # Name fallback — try exact uppercase match, then canonical
+            # (LTD/LIMITED/PRIVATE/PVT-stripped) match, then substring.
+            name_up = (cn.broker_name or '').upper().strip()
+            if not name_up:
+                return {}
+            if name_up in self._brokers_by_name:
+                return self._brokers_by_name[name_up]
+            canon = self._canon_name(name_up)
+            if canon and canon in self._brokers_by_name:
+                return self._brokers_by_name[canon]
+            for known_name, bb in self._brokers_by_name.items():
+                if known_name and (known_name in name_up or name_up in known_name):
+                    return bb
+                if canon and (known_name in canon or canon in known_name):
+                    return bb
+            return {}
+
         for cn in contract_notes:
             for trade in cn.trades:
-                # Some brokers (Emkay) print their dealer_code in the SEBI
-                # column of the NSDL xlsx. Consult dealer_code as a 3rd
-                # fallback so the lookup actually succeeds instead of
-                # silently falling through to the echo-default below.
-                _sebi_u = cn.broker_sebi.upper()
-                broker      = (self._brokers_by_sebi.get(_sebi_u) or
-                               self._brokers_by_reg_no.get(_sebi_u) or
-                               self._brokers_by_dealer.get(_sebi_u) or {})
+                broker      = _resolve_broker(cn)
                 dealer_code = broker.get('dealer_code', cn.broker_sebi).upper()
                 ucc         = cn.ucc.upper()
                 isin        = trade.isin

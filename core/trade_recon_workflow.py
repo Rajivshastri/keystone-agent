@@ -328,12 +328,15 @@ def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
                         for _row in _csv.DictReader(_f):
                             _process_row({k.upper().strip(): v for k, v in _row.items()})
                 elif _ext_z8 == 'xls':
+                    # Old BIFF .xls — openpyxl can't read these; use xlrd.
                     import xlrd as _xlrd_z8
                     _wb_z8 = _xlrd_z8.open_workbook(sec_master_path)
                     _ws_z8 = _wb_z8.sheet_by_index(0)
-                    _headers_z8 = [str(_ws_z8.cell_value(0, cx) or '').upper().strip() for cx in range(_ws_z8.ncols)]
+                    _headers_z8 = [str(_ws_z8.cell_value(0, cx) or '').upper().strip()
+                                   for cx in range(_ws_z8.ncols)]
                     for rx in range(1, _ws_z8.nrows):
-                        _process_row({_headers_z8[cx]: str(_ws_z8.cell_value(rx, cx) or '') for cx in range(_ws_z8.ncols) if cx < len(_headers_z8)})
+                        _process_row({_headers_z8[cx]: str(_ws_z8.cell_value(rx, cx) or '')
+                                      for cx in range(_ws_z8.ncols) if cx < len(_headers_z8)})
                     _wb_z8.release_resources()
                 else:
                     import openpyxl as _openpyxl_z8
@@ -472,13 +475,16 @@ def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
         'nomination', 'kyc', 'account opening', 'onboarding',
         'circular', 'advisory', 'newsletter', 'mandate', 'agreement',
         'demat', 'form_', '_form', 'account statement', 'bank statement',
-        'holding report', 'settlement report', 'annexure_report',
-        # Emkay's order-level annexures (G585/G587/G588/G602 per pool) carry
-        # the same trades already printed in the Combined_* NSDL CN, but in
-        # an order-by-order format pdfplumber can't parse. Skipping them
-        # avoids 4× failing pdfplumber + doomed Claude-fallback calls that
-        # push the request over Azure's 230s gateway budget on cold cache.
-        'contract_annexure', 'contract annexure',
+        'holding report', 'settlement report',
+        # Order-level annexure PDFs (Emkay G585/G587/G588/G602 per pool,
+        # and any broker's similar order-by-order attachments) carry the
+        # same trades already printed in the Combined_* NSDL CN, in a
+        # layout pdfplumber can't parse. Match any filename containing
+        # "annexure" — covers contract_annexure, G585_ANNEXURE,
+        # AnnexureG602, Annexure-Report, annexure_report, etc. Skipping
+        # them also avoids 4× failing pdfplumber + doomed Claude-fallback
+        # calls that push the request over Azure's 230s gateway budget.
+        'annexure',
     ]
 
     def _is_likely_cn(path: str) -> bool:
@@ -496,7 +502,28 @@ def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
     broker_lookup = {b['dealer_code'].upper(): b for b in broker_map.get('brokers', [])}
     _ticker_to_isin = {v.upper(): k for k, v in isin_to_nse_ticker.items() if v}
 
-    for pdf_path in cn_files:
+    # Sort CN files newest-first by the _YYYYMMDDTHHMMSS suffix in the name
+    # (added by the email ingestor). Enables cross-file supersedure: a
+    # broker may send a corrected CN later in the day that restates the
+    # same (broker, pool, ISIN, side, trade_date) combo. The later file's
+    # trades win; the earlier file's trades for that combo are dropped,
+    # while its OTHER trades (unaffected combos) remain.
+    import re as _re
+    def _cn_recv_sort_key(path: str):
+        fname = os.path.basename(path)
+        m = _re.search(r'_(\d{8}T\d{6})\.[A-Za-z0-9]+$', fname)
+        if m:
+            return (1, m.group(1))   # primary key: filename timestamp
+        try:
+            return (0, os.path.getmtime(path))   # fallback: mtime
+        except OSError:
+            return (0, 0)
+    cn_files_sorted = sorted(cn_files, key=_cn_recv_sort_key, reverse=True)
+
+    combo_owner: dict = {}   # (broker, ucc, isin, side, date) -> owning filename
+    superseded_count = 0
+
+    for pdf_path in cn_files_sorted:
         fname = os.path.basename(pdf_path)
         broker_info = _find_broker_for_pdf(fname, broker_lookup)
         sebi   = broker_info.get('sebi_code', '') if broker_info else ''
@@ -504,15 +531,57 @@ def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
         result = pdf_parser.parse_file(pdf_path, sebi, b_name,
                                        ticker_to_isin=_ticker_to_isin)
         if result.ok and result.contract_notes:
-            contract_notes.extend(result.contract_notes)
-            log_fn(f"CN parsed: {fname} → {len(result.contract_notes)} CN(s)")
-            for _cn in result.contract_notes:
+            # Two-pass per file: first figure out which combos to keep
+            # (respecting what newer files already claimed), THEN commit
+            # this file's combos to combo_owner. The two-pass is essential
+            # when a single file legitimately carries MULTIPLE CNs for the
+            # same combo (e.g. a rectification that splits an aggregated
+            # trade into two) — all of them must pass before combo_owner
+            # locks the combo.
+            this_file_combos: set = set()
+            kept_cns = []
+            for cn in result.contract_notes:
+                kept_trades = []
+                for t in cn.trades:
+                    key = (
+                        (cn.broker_sebi or sebi or '').upper(),
+                        (cn.ucc or '').upper(),
+                        (t.isin or '').upper(),
+                        (t.side or '').capitalize(),
+                        (cn.trade_date or ''),
+                    )
+                    if key in combo_owner:
+                        # A newer file already owns this combo — drop this
+                        # trade as superseded content from an older CN file.
+                        superseded_count += 1
+                        log_fn(
+                            f"  Superseded: {fname} CN {cn.cn_no} "
+                            f"{t.isin} {t.side} qty={t.qty} "
+                            f"(newer version in {combo_owner[key]})"
+                        )
+                        continue
+                    this_file_combos.add(key)
+                    kept_trades.append(t)
+                if kept_trades:
+                    cn.trades = kept_trades
+                    kept_cns.append(cn)
+            # Commit combo ownership AFTER the whole file is processed
+            for k in this_file_combos:
+                combo_owner[k] = fname
+            contract_notes.extend(kept_cns)
+            log_fn(f"CN parsed: {fname} → {len(kept_cns)} CN(s) kept "
+                   f"({len(result.contract_notes) - len(kept_cns)} superseded)")
+            for _cn in kept_cns:
                 log_fn(f"  cn_no={_cn.cn_no!r} ucc={_cn.ucc!r} trades={[(t.isin,t.qty,t.side,t.stt_total) for t in _cn.trades]}")
         else:
             for w in result.warnings:
                 log_fn(f"CN warning ({fname}): {w}", 'warning')
             if result.error:
                 log_fn(f"CN error ({fname}): {result.error}", 'error')
+
+    if superseded_count:
+        log_fn(f"CN cross-file dedup: dropped {superseded_count} trade(s) "
+               f"superseded by later-received file(s)")
 
     # ── CN Deduplication ──────────────────────────────────────────────────── #
     _broker_norm: dict = {}

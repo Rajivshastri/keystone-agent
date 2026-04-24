@@ -434,9 +434,9 @@
     },
     {
       "active": true,
-      "display_name": "NSDL SRK File",
+      "display_name": "NSDL Contract Note Status",
       "file_password": "",
-      "file_prefix": "SRK",
+      "file_contains": "CNSTAT",
       "name": "nsdl",
       "sender_email": "operations@thegoldstandard.in",
       "subject_keyword": ""

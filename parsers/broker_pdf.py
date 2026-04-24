@@ -21,7 +21,7 @@ import re
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -152,15 +152,41 @@ class BrokerPDFParser:
             result.error = f"Could not open PDF: {e}"
             return result
 
+        # Content-level rejection of non-CN PDFs that slip past the filename
+        # filter. Example: Kotak's "Annual Global Transaction Statement" is
+        # delivered in the same daily email batch as real contract notes,
+        # named by UCC (e.g. 101QD.PDF) so the filename check can't catch it.
+        # Without this rejection, the parser's _extract_from_tables fallback
+        # treats the AGTS trades (often from the prior fiscal year) as
+        # today's CNs — creating 30+ phantom NSDL_MISSING breaks in C3.
+        _NON_CN_CONTENT_MARKERS = [
+            'annual global transaction statement',
+            'holding statement',
+            'portfolio valuation statement',
+            'consolidated account statement',
+            'capital gains statement',
+            'ledger statement',
+        ]
+        _lowered = full_text.lower()
+        for _marker in _NON_CN_CONTENT_MARKERS:
+            if _marker in _lowered:
+                result.error = (f"Not a contract note — content matches "
+                                f"{_marker!r} (non-CN statement PDF)")
+                logger.info(
+                    f"BrokerPDFParser: skipping {Path(pdf_path).name} — "
+                    f"content marker {_marker!r} matched")
+                return result
+
         # Detect encoding quality — if >20% of chars are CID codes → use Claude
         cid_count = full_text.count('(cid:')
         total_len  = max(len(full_text), 1)
         cid_ratio  = cid_count * 6 / total_len
         use_claude = cid_ratio > 0.15
 
+        claude_err: Optional[str] = None
         if use_claude:
             logger.info(f"BrokerPDFParser: CID ratio {cid_ratio:.0%} — using Claude API for {Path(pdf_path).name}")
-            cns = _extract_via_claude(pdf_path, broker_sebi_code, broker_name)
+            cns, claude_err = _extract_via_claude(pdf_path, broker_sebi_code, broker_name)
         else:
             logger.info(f"BrokerPDFParser: using pdfplumber for {Path(pdf_path).name}")
             # Log first 500 chars of extracted text for debugging ICICI-style formats
@@ -175,16 +201,24 @@ class BrokerPDFParser:
         elif not use_claude:
             # pdfplumber returned 0 CNs but file is text-readable — try Claude API
             logger.info(f"BrokerPDFParser: pdfplumber extracted 0 CNs, trying Claude API for {Path(pdf_path).name}")
-            cns = _extract_via_claude(pdf_path, broker_sebi_code, broker_name)
+            cns, claude_err = _extract_via_claude(pdf_path, broker_sebi_code, broker_name)
             if cns:
                 for cn in cns:
                     cn.source_file = str(pdf_path)
                 result.contract_notes = cns
+            elif claude_err:
+                result.warnings.append(
+                    f"{Path(pdf_path).name}: {claude_err}"
+                )
             else:
                 result.warnings.append(
                     f"No contract notes extracted from {Path(pdf_path).name}. "
                     "Manual review may be needed."
                 )
+        elif claude_err:
+            result.warnings.append(
+                f"{Path(pdf_path).name}: {claude_err}"
+            )
         else:
             result.warnings.append(
                 f"No contract notes extracted from {Path(pdf_path).name}. "
@@ -534,16 +568,24 @@ def _extract_via_pdfplumber(full_text: str,
     # this keeps the client header (UCC, name) together with its trade data.
     # Fall back to "CONTRACT NOTE NO." for ICICI/Motilal where the tax invoice
     # header doesn't repeat per CN.
-    cn_blocks = re.split(r'(?=CONTRACT NOTE CUM TAX INVOICE)', full_text, flags=re.IGNORECASE)
-    cn_blocks = [b for b in cn_blocks if b.strip()]
-    if len(cn_blocks) <= 1:
-        # ICICI: "CONTRACT NOTE \n ICICI SECURITIES" — split on header boundary
-        cn_blocks = re.split(r'(?=CONTRACT NOTE\s*\n)', full_text, flags=re.IGNORECASE)
-        cn_blocks = [b for b in cn_blocks if b.strip()]
-    if len(cn_blocks) <= 1:
-        cn_blocks = re.split(r'CONTRACT NOTE NO\.?\s*', full_text, flags=re.IGNORECASE)
-    if len(cn_blocks) <= 1:
-        cn_blocks = re.split(r'(?=TRADE DATE\s)', full_text, flags=re.IGNORECASE)
+    # Try each split strategy; use the one that produces the most blocks.
+    # Single-CN PDFs (Emkay, etc.) hit the first strategy with 1 block and
+    # we stop there. Multi-CN PDFs (ICICI, Motilal) need the "Contract Note
+    # No" split to produce one block per CN.
+    def _try_split(pat):
+        bs = re.split(pat, full_text, flags=re.IGNORECASE)
+        return [b for b in bs if b.strip()]
+    cn_blocks = _try_split(r'(?=CONTRACT NOTE CUM TAX INVOICE)')
+    for alt_pat in (
+        r'(?=CONTRACT NOTE\s*\n)',              # ICICI header boundary
+        r'(?=CONTRACT NOTE NO\.?)',             # ICICI/Motilal per-CN label (lookahead preserves label)
+        r'(?=TRADE DATE\s)',                    # last-ditch
+    ):
+        if len(cn_blocks) > 1:
+            break
+        alt = _try_split(alt_pat)
+        if len(alt) > len(cn_blocks):
+            cn_blocks = alt
 
     # For each block, try to extract a complete CN.
     # ICICI PDFs contain "CONTRACT NOTE NO." TWICE per CN — once in the client
@@ -563,6 +605,7 @@ def _extract_via_pdfplumber(full_text: str,
         r'Securities Transaction Tax|Total Brokerage|STT\s*\(|Net Amount',
         re.IGNORECASE
     )
+    _seen_cn_nos = set()
     for i, block in enumerate(cn_blocks):
         if not block.strip():
             continue
@@ -574,6 +617,9 @@ def _extract_via_pdfplumber(full_text: str,
             parse_text = block + next_block
         cn = _parse_cn_block(parse_text, broker_sebi, broker_name)
         if cn and cn.cn_no and cn.trades:
+            if cn.cn_no in _seen_cn_nos:
+                continue  # skip duplicates from overlapping block extension
+            _seen_cn_nos.add(cn.cn_no)
             cn.extraction_method = 'pdfplumber'
             cns.append(cn)
         elif cn and cn.cn_no and not cn.trades:
@@ -639,9 +685,10 @@ def _parse_cn_block(text: str, broker_sebi: str, broker_name: str) -> Optional[C
     #   Haitong: 'TRADE DATE Apr 09,2026'
     #   Equirus: 'TRADE DATE 09/04/2026'
     _raw_td = (find(r'Trade Date\s*[:\s]*\s*(\d+-[A-Za-z]+-\d+)') or
+               find(r'Trade Date\s*[:\s]*\s*(\d{1,2}/\d{1,2}/\d{4})') or  # 15/04/2026
                find(r'Trade Date\s*[:\s]*\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})') or
                find(r'TRADE DATE[:\s]+([A-Za-z]+\s+\d{1,2},?\s*\d{4})') or
-               find(r'TRADE DATE[:\s]+(\S+)'))
+               find(r'TRADE DATE[:\s]+(\d[\d/\-A-Za-z\s,]+\d)'))
     trade_date  = _normalise_date(_raw_td)
     # Settlement date — match the same set of formats as trade_date:
     #   "15 Apr 2026"   (day month year)
@@ -650,10 +697,13 @@ def _parse_cn_block(text: str, broker_sebi: str, broker_name: str) -> Optional[C
     #   "Apr 15 2026"   (no comma)
     # The last \S+ pattern is a greedy fallback but only grabs ONE token,
     # which is why "Apr 15, 2026" was truncating to just "Apr" before.
-    _raw_sd = (find(r'Settlement Date\s*[:\s]+\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})') or
+    _raw_sd = (find(r'Settlement Date\s*[:\s]+\s*(\d{1,2}/\d{1,2}/\d{4})') or  # Emkay: 16/04/2026
+               find(r'SETTLEMENT DATE[.\s]*(\d{1,2}/\d{1,2}/\d{4})') or           # Equirus: SETTLEMENT DATE. 10/04/2026
+               find(r'Settlement Date\s*[:\s]+\s*(\d{1,2}-[A-Za-z]+-\d{4})') or  # Nuvama: 13-Apr-2026
+               find(r'SETTLEMENT DATE\s*[:\s]*(\d{1,2}-[A-Z]+-\d{4})') or       # ICICI: 24-MAR-2026
+               find(r'Settlement Date\s*[:\s]+\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})') or
                find(r'SETTLEMENT DATE[.:\s]+([A-Za-z]+\s+\d{1,2},?\s*\d{4})') or
-               find(r'Settlement Date\s*[:\s]+\s*([A-Za-z]+\s+\d{1,2},?\s*\d{4})') or
-               find(r'SETTLEMENT DATE[.:]*\s*(\S+)'))
+               find(r'Settlement Date\s*[:\s]+\s*([A-Za-z]+\s+\d{1,2},?\s*\d{4})'))
     settle_date = _normalise_date(_raw_sd)
 
     # UCC — multiple broker formats
@@ -682,12 +732,43 @@ def _parse_cn_block(text: str, broker_sebi: str, broker_name: str) -> Optional[C
         find_float(r'Net\s+[Aa]mount\s+[Rr]eceivable.*?(-?[\d,]+\.?\d*)', 0.0)
     )
 
+    # Broker name fallback — Emkay et al. put it in the footer as
+    # "For EMKAY GLOBAL FINANCIAL SERVICES LTD.". Useful when the header
+    # banner where SEBI regn lives is rendered as image text pdfplumber
+    # misses; the engine can then resolve the broker by name.
+    # Broker name detection. Try the known-broker canonical list first so
+    # every major broker gets its clean name; only fall back to generic
+    # footer/heading regexes when the broker is unknown.
+    _bname = broker_name
+    if not _bname:
+        for _broker_re in (
+            r'(Kotak Securities Limited)',
+            r'(Nuvama Wealth Management Ltd)',
+            r'(Motilal Oswal Financial Services Ltd)',
+            r'(ICICI Securities Limited)',
+            r'(Haitong Securities India Private Limited)',
+            r'(Equirus Securities Private Limited)',
+            r'(IIFL Capital Services Limited)',
+            r'(Dhanki Securities\.?\s*Pvt\.?\s*Ltd\.?)',
+            r'(EMKAY GLOBAL FINANCIAL SERVICES (?:LTD|LIMITED))',
+        ):
+            _bm = re.search(_broker_re, text, re.IGNORECASE)
+            if _bm:
+                _bname = _bm.group(1)
+                break
+    if not _bname:
+        _bname = find(r'^([A-Z][A-Z ]+(?:PRIVATE|LTD|LIMITED)\b)', '')
+    if not _bname:
+        # Footer "For <NAME> LTD/LIMITED/PVT" — allow mixed case in the name
+        # so brokers like Dhanki ("For Dhanki Securities.Pvt.Ltd.") match.
+        _bname = find(r'For\s+([A-Za-z][A-Za-z0-9 &.,\-]+?(?:PRIVATE|PVT\.?|LTD\.?|LIMITED)\.?)', '')
+
     return ContractNote(
         cn_no           = cn_no,
         trade_date      = trade_date,
         settlement_date = settle_date,
         ucc             = ucc,
-        broker_name     = broker_name or find(r'^([A-Z][A-Z ]+(?:PRIVATE|LTD|LIMITED)\b)', ''),
+        broker_name     = _bname.strip().rstrip('.'),
         broker_sebi     = sebi,
         trades          = trades,
         net_amount      = _net_amt,
@@ -724,6 +805,51 @@ def _parse_trade_table(text: str) -> List[ContractNoteTrade]:
         r'(\d[\d,]*\.\d+)',              # Total value
         re.IGNORECASE
     )
+
+    # ── Pass -1: Kotak format ──────────────────────────────────────────────────
+    # Kotak's trade row layout splits across two lines — the security name
+    # and numeric columns are on one line ending in "NAME-", and the ISIN +
+    # continuation of the "Gross Rate (foreign currency)" column is on the
+    # next line. Example:
+    #   MAHINDRA & MAHINDRA LTD- Buy 6,050 3,174.8371 2.186316 3,177.023416 19,220,991.67 19,208.00 All Incl
+    #   1 INE101A01026 3.1748
+    # We match the first line (name + side + numbers) and then hunt for the
+    # ISIN in a small window of lines immediately after.
+    kotak_row_pattern = re.compile(
+        r'([A-Z][A-Z0-9 .&\-]+?)-?\s+'          # Security name ending with optional dash
+        r'(Buy|Sell)\s+'                         # Side
+        r'([\d,]+)\s+'                           # Quantity
+        r'([\d,]+\.\d+)\s+'                      # Gross rate per unit
+        r'([\d,]+\.\d+)\s+'                      # Brokerage per unit
+        r'([\d,]+\.\d+)\s+'                      # Net rate per unit
+        r'([\d,]+\.\d+)\s+'                      # Net total
+        r'([\d,]+\.\d+)\s+All Incl',             # STT amount, then "All Incl" marker
+        re.IGNORECASE
+    )
+    for mk in kotak_row_pattern.finditer(text):
+        # Look for the ISIN in the ~200 chars after this match
+        window = text[mk.end(): mk.end() + 250]
+        isin_m = re.search(r'\b(IN[EF][A-Z0-9]{9})\b', window)
+        if not isin_m:
+            continue
+        _isin_k = isin_m.group(1)
+        if any(t.isin == _isin_k for t in trades):
+            continue
+        try:
+            sec_name = mk.group(1).strip().rstrip('-').strip()
+            side     = mk.group(2).capitalize()
+            qty      = float(mk.group(3).replace(',', ''))
+            wap      = float(mk.group(4).replace(',', ''))
+            brok     = float(mk.group(5).replace(',', ''))
+            stt_raw  = float(mk.group(8).replace(',', ''))
+            trades.append(ContractNoteTrade(
+                isin=_isin_k, security_name=sec_name, side=side,
+                qty=qty, wap=wap, brokerage_per_share=brok,
+                total_value=round(qty * wap, 2), exchange='NSE',
+                stt_total=stt_raw,
+            ))
+        except (ValueError, ZeroDivisionError):
+            continue
 
     # ── Pass 0: Motilal format ─────────────────────────────────────────────────
     # Format: ISIN - NAME Side qty gross_price total brok_rate brok_total net_rate net_total
@@ -846,7 +972,6 @@ def _parse_trade_table(text: str) -> List[ContractNoteTrade]:
                         f'but Net Obligation says {side} — using WAP')
                     side = _wap_side
 
-            # STT — look nearby for "Securities Transaction Tax"
             # STT — long-form "Securities Transaction Tax" or bare "STT"
             stt_total = _parse_stt_amount(context)
 
@@ -1187,30 +1312,42 @@ def _extract_from_tables(page_tables: list,
 
 def _extract_via_claude(pdf_path: str,
                          broker_sebi: str,
-                         broker_name: str) -> List[ContractNote]:
+                         broker_name: str) -> Tuple[List[ContractNote], Optional[str]]:
     """
     Use Claude API (vision) to extract contract note data from PDFs
     with garbled/encoded fonts that pdfplumber cannot read.
     Converts each page to an image, sends to claude-sonnet with a
     structured extraction prompt.
+
+    Returns (contract_notes, error_message). error_message is non-None when
+    the fallback itself failed to run (missing SDK, missing API key, API
+    auth error) — distinct from "ran successfully but found no trades".
     """
     try:
         import base64
         from pdf2image import convert_from_path
         import anthropic as _anth_check  # noqa — verify SDK is installed
     except ImportError:
-        logger.warning("pdf2image or anthropic SDK not available — cannot use Claude API fallback")
-        return []
+        msg = "pdf2image or anthropic SDK not available — cannot use Claude API fallback"
+        logger.warning(msg)
+        return [], msg
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        msg = "ANTHROPIC_API_KEY not set — Claude fallback unavailable"
+        logger.error(msg)
+        return [], msg
 
     try:
         images = convert_from_path(pdf_path, dpi=150, fmt='jpeg')
     except Exception as e:
-        logger.warning(f"PDF to image conversion failed: {e}")
-        return []
+        msg = f"PDF to image conversion failed: {e}"
+        logger.warning(msg)
+        return [], msg
 
     # Group pages into pairs (each CN typically spans 2 pages)
     page_groups = [images[i:i+2] for i in range(0, len(images), 2)]
     all_cns = []
+    fatal_err: Optional[str] = None
 
     for group in page_groups:
         image_content = []
@@ -1299,10 +1436,17 @@ def _extract_via_claude(pdf_path: str,
                 ))
 
         except Exception as e:
+            name = type(e).__name__.lower()
+            msg = str(e).lower()
+            is_config = any(k in name for k in ("authentication", "permissiondenied", "notfound", "badrequest")) \
+                or any(k in msg for k in ("api_key", "unauthorized", "model", "invalid key"))
             logger.warning(f"Claude API extraction failed for a page group: {e}")
+            if is_config:
+                fatal_err = f"Claude API config error: {e}"
+                break
             continue
 
-    return all_cns
+    return all_cns, fatal_err
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────── #

@@ -247,6 +247,18 @@ class EmailIngestor:
                 if file_prefix and not att_name.lower().startswith(file_prefix.lower()):
                     continue
 
+                # Check file_contains substring match — more resilient than
+                # file_prefix when a sender renames files (NSDL renamed the
+                # steady file at least twice; "CNSTAT" is the one token that
+                # has survived every rename). May be a string or a list.
+                fc_raw = matched_source.get('file_contains', '')
+                file_contains = ([fc_raw] if isinstance(fc_raw, str) else list(fc_raw or [])) if fc_raw else []
+                file_contains = [k for k in file_contains if k]
+                if file_contains and not any(
+                    k.lower() in att_name.lower() for k in file_contains
+                ):
+                    continue
+
                 # Download zip content
                 content_bytes = att.get('contentBytes')
                 if not content_bytes:
