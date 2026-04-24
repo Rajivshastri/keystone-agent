@@ -142,12 +142,25 @@ class PoolReconResult:
         return self.overall_status in ('Balance Break', 'Transaction Break')
 
     @property
+    def unmatched_txn_count(self) -> int:
+        """How many of today's transactions couldn't be reconciled 1:1.
+        Used as a Note-level footnote when the primary break is a closing
+        balance mismatch — txn-level non-alignment is a supporting detail,
+        not a standalone headline.
+        """
+        if not self.has_opening_balance:
+            return 0
+        return sum(1 for t in self.txn_matches if not t.is_matched)
+
+    @property
     def overall_status(self) -> str:
         # Status vocabulary (6 terms):
-        #   Clean              — balances match
+        #   Clean              — closing balances match AND txns reconcile
         #   Settlement Timing  — break equals pending settlement (equity sell / MF)
         #   Balance Break      — closing balances differ beyond TOLERANCE
-        #   Transaction Break  — closing matches but individual txns don't reconcile
+        #                        (today's recon failed; the primary finding)
+        #   Transaction Break  — closing matches but individual txns don't
+        #                        reconcile (footnote-level finding)
         #   Not in WS          — custodian account has no corresponding WS Bank Book
         #   No Statement       — WS Bank Book exists but no custodian statement
 
@@ -173,14 +186,9 @@ class PoolReconResult:
         if self.l2_status == 'COVERED':
             return 'Clean'
 
-        # Settlement timing: adjust WS closing by pending settlement amount
-        # (equity sell proceeds or MF orders not yet in the bank).
-        # WS closing includes sell credits not yet in bank → adjusted WS =
-        # WS closing - sell proceeds. If adjusted WS matches bank → timing only.
+        # Settlement timing: adjust WS closing by pending settlement amount.
         if (self.mf_orders_pending > 0
                 and abs(self.l1_variance) > TOLERANCE):
-            # For sells: WS has the credit, bank doesn't → WS > bank
-            # Adjusted variance = bank - (WS - pending_sell) = l1_variance + pending
             _adjusted_var = abs(self.l1_variance) - self.mf_orders_pending
             if abs(_adjusted_var) <= TOLERANCE:
                 return 'Settlement Timing'
@@ -193,11 +201,11 @@ class PoolReconResult:
         if self.l1_status == 'NO BALANCE DATA':
             return 'No Statement'
 
-        # L1 balance mismatch beyond tolerance
+        # L1 balance mismatch beyond tolerance — primary break for the day.
         if self.l1_status != 'MATCH':
             return 'Balance Break'
 
-        # Closing matches but individual transactions don't reconcile
+        # Closing matches but individual transactions don't reconcile.
         return 'Transaction Break'
 
     def to_dict(self) -> dict:

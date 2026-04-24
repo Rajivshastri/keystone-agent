@@ -141,68 +141,69 @@ def run_bank_recon(date_str: str, fm, sources: list, password: str,
     # ── ICICI bank ───────────────────────────────────────────────────────── #
     # ICICI: daily files with B/F (opening), transactions (separate
     # debit/credit columns), and closing in footer text.
-    # Opening = prev working day file's closing (universal rule).
-    # Closing = recon-day file's closing.
-    # Transactions = sum across txn dates, deduplicated.
-    # Load ICICI files tagged by date so we know which are prev WD vs txn dates
+    #
+    # Multi-day (and single-day) rule:
+    #   Opening      = B/F from the EARLIEST file in _txn_dates.
+    #   Transactions = pooled across ALL _txn_dates files, deduped.
+    #   Closing      = opening + credits − debits (computed).
+    #
+    # Prev-WD files are not loaded — they sit outside the recon window.
+    # Day-after-recon is included defensively: ICICI emails today's
+    # statement around 2 AM the next morning, so it can land in the
+    # day_after folder depending on routing.
     _icici_files_tagged = []  # (date_str, file_path)
-    _icici_load_dates = list(_all_dates)
+    _icici_load_dates = list(_txn_dates)
     _day_after = (datetime.strptime(date_str, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
     if _day_after not in _icici_load_dates:
         _icici_load_dates.append(_day_after)
     for _bd in _icici_load_dates:
         for _f in fm.get_bank_files(_bd, 'icici_bank'):
             _icici_files_tagged.append((_bd, _f))
+    # Sort ascending so the earliest file's account object becomes the
+    # base (and its B/F becomes opening).
+    _icici_files_tagged.sort(key=lambda x: x[0])
 
     if _icici_files_tagged:
         parser = ICICIBankParser()
-        _icici_prev_closing: dict = {}  # acct_no → closing_balance (from prev WD)
         _icici_closing:      dict = {}  # acct_no → (closing_balance, as_on_date, source_file)
         _icici_txns:         dict = {}  # acct_no → [BankTransaction, ...]
         _icici_fmax:         dict = {}  # acct_no → {txn_key → max_count}
-        _icici_base:         dict = {}  # acct_no → BankAccount (template)
+        _icici_base:         dict = {}  # acct_no → BankAccount (from earliest file)
 
         for _bd, f in _icici_files_tagged:
             r = parser.parse_file(f)
             if not r.ok:
                 plog(f'ICICI parse error {Path(f).name}: {r.error}')
                 continue
-            _is_prev_wd_file = (_bd == _prev_wd_date) if _prev_wd_date else False
-            plog(f'ICICI: parsed {len(r.accounts)} account(s) from {_bd} '
-                 f'({"opening" if _is_prev_wd_file else "txn"})')
+            plog(f'ICICI: parsed {len(r.accounts)} account(s) from {_bd}')
             for acct in r.accounts:
                 acct.source_file = f
                 ano = acct.account_no
+                # Earliest sighting = earliest _txn_dates file → B/F = opening.
                 if ano not in _icici_base:
                     _icici_base[ano] = acct
-                if _is_prev_wd_file:
-                    # Prev WD file: its closing = our opening
-                    _icici_prev_closing[ano] = acct.closing_balance
-                    plog(f'  ICICI [{ano}] prev WD: bf={acct.opening_balance} '
-                         f'closing={acct.closing_balance} as_on={acct.as_on_date}')
-                else:
-                    # Txn-date files: collect transactions
-                    _icici_txns.setdefault(ano, []).extend(acct.transactions)
-                    _icici_fmax.setdefault(ano, {})
-                    _collect_file_max(acct.transactions, _icici_fmax[ano])
-                # Always track latest closing
+                _icici_txns.setdefault(ano, []).extend(acct.transactions)
+                _icici_fmax.setdefault(ano, {})
+                _collect_file_max(acct.transactions, _icici_fmax[ano])
                 if acct.closing_balance != 0.0:
                     _icici_closing[ano] = (acct.closing_balance, acct.as_on_date, f)
 
         merged_accounts = []
         for ano, acct in _icici_base.items():
-            # Opening = prev working day's closing
-            if ano in _icici_prev_closing:
-                acct.opening_balance    = _icici_prev_closing[ano]
-                acct.has_opening_balance = True
-            # Closing = latest file's closing
-            _cl = _icici_closing.get(ano)
-            if _cl:
-                acct.closing_balance = _cl[0]
-                acct.as_on_date      = _cl[1]
-                acct.source_file     = _cl[2]
+            # Opening = acct.opening_balance (already set to the earliest
+            # file's B/F by the parser + first-seen-wins logic above).
+            acct.has_opening_balance = True
             acct.transactions = _dedup_txns(
                 _icici_txns.get(ano, []), _icici_fmax.get(ano, {}))
+            # Closing = opening + credits − debits (computed). ICICI's
+            # file footer is stamped at email-sent time (~2 AM next day)
+            # and can include next-day transactions that would be
+            # double-counted if we trusted the footer.
+            acct.closing_balance = acct.computed_closing
+            acct.as_on_date      = date_str
+            _cl = _icici_closing.get(ano)
+            if _cl:
+                acct.source_file = _cl[2]
             merged_accounts.append(acct)
 
         if merged_accounts:
@@ -467,7 +468,12 @@ def run_bank_recon(date_str: str, fm, sources: list, password: str,
         }
 
         for ano, acct in kotak_merged.items():
-            # Opening = prev WD file's closing (universal rule)
+            # Opening = prev WD file's closing (universal rule).
+            # Kotak CSVs ship an "Opening Balance" row, but it's the start
+            # of the file's multi-day window (typically prev WD), not
+            # today's opening. So we can't treat it as sacrosanct the way
+            # we do for ICICI — we still derive today's opening from the
+            # prev-WD file's closing.
             if ano in _kotak_prev_closing:
                 acct.opening_balance    = _kotak_prev_closing[ano]
                 acct.has_opening_balance = True
