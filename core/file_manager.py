@@ -105,11 +105,39 @@ class FileManager:
         """
         List all files in raw/{source_name}/ for the given date.
         For Kotak, this may include both xlsx and csv — caller filters.
+
+        Deduplicates by logical stem: the email ingestor tags each
+        attachment with a _YYYYMMDDTHHMMSS suffix based on the email's
+        received time, so the same custodian report retransmitted twice
+        lands as two files with different timestamps but the same base
+        name. Left unchecked, the holdings/bank parsers read both and
+        double-count every line. Dedup keeps only the newest per logical
+        group (by the timestamp tag, falling back to file mtime).
         """
+        import re as _re_ts
         d = self.raw_dir(date_str, source_name)
         if not d.exists():
             return []
-        return [str(p) for p in d.iterdir() if p.is_file()]
+        _ts_rx = _re_ts.compile(r'_(\d{8}T\d{6})$')
+        grouped = {}
+        for p in d.iterdir():
+            if not p.is_file():
+                continue
+            m = _ts_rx.search(p.stem)
+            if m:
+                logical_stem = p.stem[:m.start()]
+                sort_key = (1, m.group(1))
+            else:
+                logical_stem = p.stem
+                try:
+                    sort_key = (0, p.stat().st_mtime)
+                except OSError:
+                    sort_key = (0, 0)
+            key = (logical_stem, p.suffix.lower())
+            existing = grouped.get(key)
+            if existing is None or sort_key > existing[0]:
+                grouped[key] = (sort_key, p)
+        return [str(entry[1]) for entry in grouped.values()]
 
     def list_all_source_files(self, date_str: str) -> dict:
         """Returns {source_name: [file_paths]} for all sources."""
