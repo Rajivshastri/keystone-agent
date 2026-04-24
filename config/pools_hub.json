@@ -263,24 +263,6 @@
       "ws_overrides": []
     },
     {
-      "pool_id": "upi_hdfc",
-      "display_name": "HDFC UPI Account (all strategies)",
-      "active": false,
-      "_note": "UPI inflow account — not reconciled in bank recon",
-      "mapin": "",
-      "ws_scheme_code": "",
-      "ws_scheme_names": [],
-      "dealer_account": "",
-      "custodian_bank": "HDFC",
-      "custodian_code": "",
-      "pool_demat_account": "",
-      "bank": "HDFC",
-      "bank_account": "5010056664950",
-      "broker_cn_aliases": [],
-      "kotak_client_id": "",
-      "ws_overrides": []
-    },
-    {
       "pool_id": "goldfalpms_axis",
       "display_name": "GoldStandard Focused Alpha Portfolio",
       "active": true,
