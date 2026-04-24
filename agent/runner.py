@@ -1623,6 +1623,7 @@ def _build_trade_fetch_sources() -> list[dict]:
             "sender_email": ts.get("sender_email", ""),
             "subject_keyword": ts.get("subject_keyword", ""),
             "file_prefix": ts.get("file_prefix", ""),
+            "file_contains": ts.get("file_contains", ""),
             "file_password": ts.get("file_password", ""),
             "attachment_type": "direct",
             "active": True,
