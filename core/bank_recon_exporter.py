@@ -73,6 +73,8 @@ NUM_FMT = '#,##0.00;[Red]-#,##0.00'
 
 def _status_fill(status: str) -> PatternFill:
     s = (status or "").lower()
+    if "within tolerance" in s:
+        return FILL_AMBER
     if "clean" in s:
         return FILL_GREEN
     if "break" in s:
@@ -251,8 +253,11 @@ def _build_detail_sheet(ws, summary: dict[str, Any],
 
     # Sort by status (breaks first), then by bank, then by strategy
     def _sort_key(p: dict) -> tuple:
-        status = str(p.get("overall_status") or "")
-        order = 0 if "break" in status.lower() else (1 if "clean" in status.lower() else 2)
+        status = (str(p.get("overall_status") or "")).lower()
+        if "within tolerance" in status: order = 1  # amber band
+        elif "break" in status:          order = 0  # red — action needed
+        elif "clean" in status:          order = 2  # green
+        else:                             order = 3
         return (order, str(p.get("bank") or ""), str(p.get("strategy_name") or ""))
 
     pool_rows = sorted(summary.get("pool_results") or [], key=_sort_key)
@@ -547,12 +552,16 @@ def _build_ledger_sheet(ws, summary: dict[str, Any],
             acct_lookup[str(ar.get("account_no") or "")] = ar
 
     def _sort_key(p: dict) -> tuple:
-        status = str(p.get("overall_status") or "")
-        order = 0 if "break" in status.lower() else (1 if "clean" in status.lower() else 2)
+        status = (str(p.get("overall_status") or "")).lower()
+        if "within tolerance" in status: order = 1  # amber band
+        elif "break" in status:          order = 0  # red — action needed
+        elif "clean" in status:          order = 2  # green
+        else:                             order = 3
         return (order, str(p.get("bank") or ""), str(p.get("strategy_name") or ""))
 
     status_display = {
         "Clean": "CLEAR",
+        "Within Tolerance": "WITHIN TOL",
         "Balance Break": "BREAK",
         "Transaction Break": "TXN BREAK",
         "No Statement": "NO STMT",

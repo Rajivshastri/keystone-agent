@@ -1216,6 +1216,21 @@ def _run_bank(job: PollJob) -> RunPush:
                 f"{bank_dates_list[-1]} ({len(bank_dates_list)} days)"
             )
 
+        # Load admin-configured bank tolerance (₹). Missing file or bad
+        # value → 100 (legacy default). Stored locally on the agent so
+        # it can be edited without a CP round-trip; CP-side push follows
+        # in a later change.
+        _bank_tol = 100.0
+        try:
+            import json as _json_tol
+            _tol_path = fm.base_dir / 'config' / 'recon_settings.json'
+            if _tol_path.exists():
+                with _tol_path.open(encoding='utf-8') as _tf:
+                    _tol_data = _json_tol.load(_tf) or {}
+                _bank_tol = float(_tol_data.get('bank_tolerance_rs', 100))
+        except Exception as _tol_err:
+            log(f'Bank tolerance load skipped ({_tol_err}); using ₹{_bank_tol}')
+
         try:
             summary, balance_summary, parse_log = run_bank_recon(
                 date_str,
@@ -1225,6 +1240,7 @@ def _run_bank(job: PollJob) -> RunPush:
                 bank_history,
                 log,  # log_fn — our collector is callable
                 bank_dates=bank_dates_list,
+                bank_tolerance_rs=_bank_tol,
             )
         except BankReconError as be:
             for line in getattr(be, "parse_log", []) or []:

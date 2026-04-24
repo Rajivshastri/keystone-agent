@@ -56,7 +56,8 @@ def _hdfc_as_on_from_zip(zip_path: str) -> str:
 
 
 def run_bank_recon(date_str: str, fm, sources: list, password: str,
-                   bank_history: dict, log_fn, bank_dates: list = None):
+                   bank_history: dict, log_fn, bank_dates: list = None,
+                   bank_tolerance_rs: float = None):
     """
     Orchestrate custodian bank file parsing and reconciliation.
 
@@ -629,6 +630,7 @@ def run_bank_recon(date_str: str, fm, sources: list, password: str,
         ws_opening_history   = _ws_history,
         mf_orders_by_mapid   = _mf_orders_by_mapid,
         date                 = date_str,
+        bank_tolerance_rs    = bank_tolerance_rs,
     )
 
     plog(f'Bank recon complete: {summary.total_pools} pools — '

@@ -137,6 +137,13 @@ class PoolReconResult:
     unbooked_sell_count:  int   = 0
     unbooked_sell_amount: float = 0.0
 
+    # Admin-configured rupee tolerance. When set, Balance Breaks whose
+    # |l1_variance| is within this value are classified as 'Within
+    # Tolerance' (amber) rather than 'Balance Break' (red). None preserves
+    # the original binary clean-vs-break behaviour for consumers that
+    # don't pass it.
+    within_tolerance_rs: Optional[float] = None
+
     @property
     def has_break(self) -> bool:
         return self.overall_status in ('Balance Break', 'Transaction Break')
@@ -154,10 +161,12 @@ class PoolReconResult:
 
     @property
     def overall_status(self) -> str:
-        # Status vocabulary (6 terms):
+        # Status vocabulary (7 terms):
         #   Clean              — closing balances match AND txns reconcile
+        #   Within Tolerance   — Balance Break but |variance| ≤ admin-configured
+        #                        rupee tolerance (amber; doesn't block final email)
         #   Settlement Timing  — break equals pending settlement (equity sell / MF)
-        #   Balance Break      — closing balances differ beyond TOLERANCE
+        #   Balance Break      — closing balances differ beyond the tolerance
         #                        (today's recon failed; the primary finding)
         #   Transaction Break  — closing matches but individual txns don't
         #                        reconcile (footnote-level finding)
@@ -195,7 +204,7 @@ class PoolReconResult:
 
         # L2 NETTED BREAK: variance persists after netting artificial accounts
         if self.l2_status == 'NETTED BREAK':
-            return 'Balance Break'
+            return self._apply_rupee_tolerance('Balance Break')
 
         # No custodian statement received — informational, not a reconcilable break
         if self.l1_status == 'NO BALANCE DATA':
@@ -203,10 +212,24 @@ class PoolReconResult:
 
         # L1 balance mismatch beyond tolerance — primary break for the day.
         if self.l1_status != 'MATCH':
-            return 'Balance Break'
+            return self._apply_rupee_tolerance('Balance Break')
 
         # Closing matches but individual transactions don't reconcile.
         return 'Transaction Break'
+
+    def _apply_rupee_tolerance(self, break_status: str) -> str:
+        """Downgrade a Balance Break to 'Within Tolerance' when the variance
+        falls inside the admin-configured rupee tolerance. Returns the
+        unchanged break_status when no tolerance is configured or the
+        variance exceeds it.
+        """
+        if self.within_tolerance_rs is None:
+            return break_status
+        if break_status != 'Balance Break':
+            return break_status
+        if abs(self.l1_variance or 0.0) <= float(self.within_tolerance_rs):
+            return 'Within Tolerance'
+        return break_status
 
     def to_dict(self) -> dict:
         return {
@@ -250,6 +273,7 @@ class PoolReconResult:
             'note':                 self.note,
             'unbooked_sell_count':  self.unbooked_sell_count,
             'unbooked_sell_amount': self.unbooked_sell_amount,
+            'within_tolerance_rs':  self.within_tolerance_rs,
         }
 
 
@@ -292,11 +316,19 @@ class BankReconSummary:
         return sum(1 for r in self.pool_results if r.overall_status == 'Clean')
 
     @property
+    def within_tolerance(self) -> int:
+        return sum(1 for r in self.pool_results
+                   if r.overall_status == 'Within Tolerance')
+
+    @property
     def covered(self) -> int:
         return 0   # 'Covered by Float' merged into Clean
 
     @property
     def breaks(self) -> int:
+        # Breaks are actionable findings — 'Within Tolerance' is amber but
+        # not a break (doesn't require explanation; doesn't block the
+        # final email).
         return sum(1 for r in self.pool_results
                    if r.overall_status in ('Balance Break', 'Transaction Break'))
 
@@ -305,6 +337,7 @@ class BankReconSummary:
             'date':                 self.date,
             'total_pools':          self.total_pools,
             'clean':                self.clean,
+            'within_tolerance':     self.within_tolerance,
             'covered':              self.covered,
             'breaks':               self.breaks,
             'pool_results':         [r.to_dict() for r in self.pool_results],
@@ -331,6 +364,7 @@ class BankVsWSReconEngine:
         bank_balance_history: dict = None,
         ws_opening_history:   dict = None,
         mf_orders_by_mapid:   dict = None,
+        bank_tolerance_rs:    float = None,
     ) -> BankReconSummary:
         """
         Three-layer Bank vs WS reconciliation.
@@ -754,6 +788,13 @@ class BankVsWSReconEngine:
 
         # ── Annotate un-booked sells ──────────────────────────────────────
         self._annotate_unbooked_sells(summary)
+
+        # Stamp the admin-configured rupee tolerance on every pool so
+        # overall_status can downgrade small Balance Breaks to the amber
+        # 'Within Tolerance' classification.
+        if bank_tolerance_rs is not None:
+            for _pr in summary.pool_results:
+                _pr.within_tolerance_rs = bank_tolerance_rs
 
         logger.info(
             f'BankVsWS Recon: {summary.total_pools} pools — '
