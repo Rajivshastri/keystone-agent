@@ -1585,9 +1585,10 @@ def _auto_dispatch_trades(
     os.environ["FINCRM_PASS"] = ws_pass
 
     try:
-        from ws_uploader import dispatch_trades
+        from ws_uploader import dispatch_trades, dispatch_nsdl
         from .secrets import KEY_M365_CLIENT_SECRET
-        from .setup import EK_M365_CLIENT_ID, EK_M365_MAILBOX, EK_M365_TENANT_ID
+        from .setup import (EK_M365_CLIENT_ID, EK_M365_MAILBOX,
+                            EK_M365_TENANT_ID, EK_TRADE_DISPATCH_TYPE)
         from .paths import config_dir
 
         m365_extras = settings.extras or {}
@@ -1598,20 +1599,67 @@ def _auto_dispatch_trades(
             "mailbox": m365_extras.get(EK_M365_MAILBOX, ""),
         }
 
-        log(f"Auto-dispatch: uploading 0096 + sending custody emails for {date_str}")
+        # Operator choice: 0096 block-deals or NSDL Steady contract notes.
+        # Configured via the trade_dispatch_type extras key (mapped to
+        # EK_TRADE_DISPATCH_TYPE). Defaults to 0096 to preserve current
+        # behaviour for agents that haven't migrated.
+        dispatch_type = (
+            (settings.extras or {}).get(EK_TRADE_DISPATCH_TYPE) or "0096"
+        ).strip().lower()
+        if dispatch_type not in ("0096", "nsdl"):
+            log(f"Dispatch type {dispatch_type!r} not recognised — defaulting to 0096",
+                level="warning")
+            dispatch_type = "0096"
 
         def progress(stage: str, detail: str) -> None:
             log(f"Dispatch {stage}: {detail}")
 
-        result = dispatch_trades(
-            file_0096=file_0096,
-            date_str=date_str,
-            progress_cb=progress,
-            config_dir=config_dir(),
-            workdir=Path(settings.workdir).resolve(),
-            azure_config=azure_config,
-            by_custodian=by_custodian,
-        )
+        if dispatch_type == "nsdl":
+            # Find today's NSDL CNSTAT file on disk. File manager's
+            # raw folder for the "nsdl" source (broker_map entry with
+            # file_contains='CNSTAT') is where the ingestor dropped it.
+            nsdl_file = None
+            try:
+                nsdl_raw = (
+                    Path(settings.workdir).resolve()
+                    / "data" / date_str / "raw" / "nsdl"
+                )
+                if nsdl_raw.exists():
+                    cands = [p for p in nsdl_raw.iterdir()
+                             if p.is_file() and "CNSTAT" in p.name.upper()
+                             and p.suffix.lower() in (".xls", ".xlsx")]
+                    if cands:
+                        nsdl_file = str(max(cands, key=lambda p: p.stat().st_mtime))
+            except Exception as _nf_err:
+                log(f"NSDL file discovery failed: {_nf_err}", level="warning")
+
+            if not nsdl_file:
+                log(f"Dispatch failed — no NSDL CNSTAT file for {date_str} "
+                    f"under data/{date_str}/raw/nsdl/", level="warning")
+                return {"dispatch": "failed: no_nsdl_file"}
+
+            log(f"Auto-dispatch (NSDL): uploading {Path(nsdl_file).name} + "
+                f"sending custody emails for {date_str}")
+            result = dispatch_nsdl(
+                nsdl_file=nsdl_file,
+                date_str=date_str,
+                progress_cb=progress,
+                config_dir=config_dir(),
+                workdir=Path(settings.workdir).resolve(),
+                azure_config=azure_config,
+                by_custodian=by_custodian,
+            )
+        else:
+            log(f"Auto-dispatch (0096): uploading 0096 + sending custody emails for {date_str}")
+            result = dispatch_trades(
+                file_0096=file_0096,
+                date_str=date_str,
+                progress_cb=progress,
+                config_dir=config_dir(),
+                workdir=Path(settings.workdir).resolve(),
+                azure_config=azure_config,
+                by_custodian=by_custodian,
+            )
 
         # Treat duplicate upload as success — the 0096 was already in WS
         # from a prior run or manual upload. The custody dispatch should

@@ -33,6 +33,10 @@ EK_M365_TENANT_ID = "m365_tenant_id"
 EK_M365_CLIENT_ID = "m365_client_id"
 EK_M365_MAILBOX = "m365_mailbox"
 EK_WS_USERNAME = "ws_portal_username"
+# Post-trade-recon dispatch choice: "0096" (legacy block-deals upload)
+# or "nsdl" (NSDL Steady contract notes, mapid=195). Defaults to "0096".
+# Operators who've migrated to NSDL CN routing set this to "nsdl".
+EK_TRADE_DISPATCH_TYPE = "trade_dispatch_type"
 
 
 # Custodians whose feeds require a password to decrypt. All four active
