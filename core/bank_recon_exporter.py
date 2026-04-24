@@ -46,6 +46,13 @@ FILL_GREEN = PatternFill("solid", fgColor="EAF7F0")
 FILL_RED = PatternFill("solid", fgColor="FDF1F1")
 FILL_AMBER = PatternFill("solid", fgColor="FDF5EB")
 FILL_GREY = PatternFill("solid", fgColor="F4F6F9")
+# Prior-day tie-out rows: grey when clean, red-tinted when gap > tolerance.
+FILL_PRIOR = PatternFill("solid", fgColor="EFEFEF")
+FILL_PRIOR_GAP = PatternFill("solid", fgColor="F8CBAD")
+
+# Prior-day tie-out tolerance (INR). Gaps inside this are shown as grey,
+# outside as red-bold.
+PRIOR_TOL = 0.05
 
 BOLD_WHITE = Font(bold=True, color="FFFFFF", size=11)
 BOLD = Font(bold=True, size=11)
@@ -96,24 +103,38 @@ def export_bank_recon(
     *,
     balance_check: dict[str, Any] | None = None,
     recon_date: str | None = None,
+    prior_closings: dict[str, tuple[str, float]] | None = None,
 ) -> str:
     """Write a bank recon Excel file and return the path.
 
-    `summary_dict`  must be the shape produced by
-                    core.bank_vs_ws_recon.BankReconSummary.to_dict().
-    `balance_check` optional dict from the custodian bank balance
-                    engine (core.bank_recon_engine.ReconSummary.to_dict()).
-                    Not used in Phase 2 output but accepted so the
-                    runner can pass it for future expansion.
-    `recon_date`    YYYY-MM-DD for the header; falls back to
-                    summary_dict['date'] or today.
+    `summary_dict`   must be the shape produced by
+                     core.bank_vs_ws_recon.BankReconSummary.to_dict().
+    `balance_check`  optional dict from the custodian bank balance
+                     engine (core.bank_recon_engine.ReconSummary.to_dict()).
+                     When present, a "Cust Balance Check" sheet is
+                     produced with one row per cust account.
+    `recon_date`     YYYY-MM-DD for the header; falls back to
+                     summary_dict['date'] or today.
+    `prior_closings` optional mapping of ``cust_account → (date, closing)``
+                     for the most recent closing strictly before
+                     ``recon_date``. When supplied, a "Prior-Day Closing"
+                     row is rendered above each pool in Pool Detail,
+                     above each account in Cust Balance Check, and above
+                     each block in Ledger. Gaps beyond PRIOR_TOL are
+                     highlighted red.
     """
     wb = openpyxl.Workbook()
 
     recon_date = recon_date or summary_dict.get("date") or datetime.utcnow().strftime("%Y-%m-%d")
+    prior_closings = prior_closings or {}
 
     _build_summary_sheet(wb.active, summary_dict, recon_date)
-    _build_detail_sheet(wb.create_sheet("Pool Detail"), summary_dict)
+    _build_detail_sheet(wb.create_sheet("Pool Detail"), summary_dict, prior_closings)
+    _build_ledger_sheet(wb.create_sheet("Ledger"), summary_dict, balance_check, prior_closings)
+    if balance_check:
+        _build_cust_balance_check_sheet(
+            wb.create_sheet("Cust Balance Check"), balance_check, prior_closings
+        )
     _build_unbooked_sheet(wb.create_sheet("Un-Booked Sells"), summary_dict)
     _build_issues_sheet(wb.create_sheet("Issues"), summary_dict)
 
@@ -208,7 +229,10 @@ DETAIL_HEADERS = [
 ]
 
 
-def _build_detail_sheet(ws, summary: dict[str, Any]) -> None:
+def _build_detail_sheet(ws, summary: dict[str, Any],
+                        prior_closings: dict[str, tuple[str, float]] | None = None) -> None:
+    prior_closings = prior_closings or {}
+
     # Title banner
     ws.merge_cells("A1:J1")
     cell = ws["A1"]
@@ -235,6 +259,9 @@ def _build_detail_sheet(ws, summary: dict[str, Any]) -> None:
 
     row = 4
     for p in pool_rows:
+        # Prior-day tie-out row (above the main pool row)
+        row = _render_prior_row_detail(ws, row, p, prior_closings)
+
         values = [
             p.get("strategy_name") or "—",
             p.get("bank") or "—",
@@ -263,6 +290,43 @@ def _build_detail_sheet(ws, summary: dict[str, Any]) -> None:
 
     for i, w in enumerate([30, 10, 24, 16, 16, 16, 16, 14, 18, 55], start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
+
+
+def _render_prior_row_detail(ws, row: int, p: dict,
+                             prior_closings: dict[str, tuple[str, float]]) -> int:
+    """Render a Prior-Day Closing row above a Pool Detail row.
+    Wrapped so a single bad entry can't kill the export — we'd rather
+    skip one prior row than fail the download."""
+    try:
+        acct = p.get("cust_account") or ""
+        if not acct:
+            return row
+        pd = prior_closings.get(acct)
+        if not pd:
+            return row
+        pd_date, pd_close_raw = pd
+        pd_close = float(pd_close_raw) if pd_close_raw is not None else 0.0
+        cust_open = float(p.get("cust_opening") or 0) if p.get("has_opening_balance") else 0.0
+        gap = round(cust_open - pd_close, 2)
+        label = f"Prior-Day Closing ({pd_date})"
+        if abs(gap) > PRIOR_TOL:
+            label += f" → opening gap {gap:+,.2f}"
+        fill = FILL_PRIOR_GAP if abs(gap) > PRIOR_TOL else FILL_PRIOR
+        # Col layout matches DETAIL_HEADERS.
+        vals = [label, p.get("bank") or "", acct,
+                None, None, pd_close, None, None, "PRIOR", None]
+        for i, v in enumerate(vals, start=1):
+            c = ws.cell(row=row, column=i, value=v)
+            c.fill = fill
+            c.border = BORDER
+            if isinstance(v, float):
+                c.number_format = NUM_FMT
+                c.alignment = RIGHT
+            if i == 1 and abs(gap) > PRIOR_TOL:
+                c.font = Font(bold=True, color=RED)
+        return row + 1
+    except Exception:
+        return row
 
 
 # ── Sheet 2b: Un-Booked Sells ────────────────────────────────────── #
@@ -448,4 +512,283 @@ def _build_issues_sheet(ws, summary: dict[str, Any]) -> None:
         )
 
     for i, w in enumerate([40, 14, 18, 30], start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+
+# ── Sheet 4: Ledger ──────────────────────────────────────────────── #
+
+
+def _build_ledger_sheet(ws, summary: dict[str, Any],
+                        balance_check: dict[str, Any] | None,
+                        prior_closings: dict[str, tuple[str, float]]) -> None:
+    """Standardised 4-row block per pool: Opening / Debits / Credits / Closing.
+    When prior-day data is available, a 'Prior-Day Closing' row is inserted
+    above the Opening row to surface the tie-out gap.
+    """
+    ws.merge_cells("A1:E1")
+    cell = ws["A1"]
+    from core.date_format import display_date as _disp_d
+    cell.value = f"Bank Reconciliation Ledger — {_disp_d(summary.get('date') or '')}"
+    cell.font = Font(bold=True, color=NAVY, size=13)
+    cell.alignment = LEFT
+
+    # Background palette per row-type.
+    OFIL  = PatternFill("solid", fgColor="EBF0F8")  # opening — pale blue
+    DFIL  = PatternFill("solid", fgColor="FFF3F3")  # debits — pale red
+    CRFIL = PatternFill("solid", fgColor="F0FFF4")  # credits — pale green
+    CFIL2 = PatternFill("solid", fgColor="E8F5E9")  # closing — green
+
+    HDR_ROW_LABELS = ["", "BANK AMOUNT", "WS AMOUNT", "DIFFERENCE", "STATUS"]
+
+    # Build lookup: account_no → custodian balance-check row
+    acct_lookup: dict[str, dict[str, Any]] = {}
+    if balance_check:
+        for ar in balance_check.get("results") or []:
+            acct_lookup[str(ar.get("account_no") or "")] = ar
+
+    def _sort_key(p: dict) -> tuple:
+        status = str(p.get("overall_status") or "")
+        order = 0 if "break" in status.lower() else (1 if "clean" in status.lower() else 2)
+        return (order, str(p.get("bank") or ""), str(p.get("strategy_name") or ""))
+
+    status_display = {
+        "Clean": "CLEAR",
+        "Balance Break": "BREAK",
+        "Transaction Break": "TXN BREAK",
+        "No Statement": "NO STMT",
+        "Not in WS": "NO WS DATA",
+    }
+
+    row = 2
+    for p in sorted(summary.get("pool_results") or [], key=_sort_key):
+        strategy = str(p.get("strategy_name") or "—")
+        bank = str(p.get("bank") or "—")
+        pool_acct = str(p.get("cust_account") or "—")
+        status = str(p.get("overall_status") or "")
+
+        # Pool header (merged banner)
+        row += 1
+        ws.merge_cells(f"A{row}:E{row}")
+        hc = ws.cell(row=row, column=1, value=f"{strategy}  |  {bank}  |  Pool: {pool_acct}")
+        hc.font = Font(bold=True, size=11, color="FFFFFF")
+        hc.fill = FILL_NAVY
+        hc.alignment = Alignment(vertical="center", indent=1)
+        ws.row_dimensions[row].height = 18
+
+        # Prior-Day Closing row (if history has a record for this account)
+        try:
+            pd = prior_closings.get(pool_acct)
+            if pd:
+                pd_date, pd_close_raw = pd
+                pd_close = float(pd_close_raw) if pd_close_raw is not None else 0.0
+                cust_open = float(p.get("cust_opening") or 0) if p.get("has_opening_balance") else 0.0
+                gap = round(cust_open - pd_close, 2)
+                row += 1
+                fill = FILL_PRIOR_GAP if abs(gap) > PRIOR_TOL else FILL_PRIOR
+                label = f"Prior-Day Closing ({pd_date})"
+                if abs(gap) > PRIOR_TOL:
+                    label += f" → gap {gap:+,.2f}"
+                gap_val = gap if abs(gap) > PRIOR_TOL else None
+                for col, v in enumerate([label, pd_close, None, gap_val, ""], start=1):
+                    c = ws.cell(row=row, column=col, value=v)
+                    c.fill = fill
+                    c.border = BORDER
+                    if col == 1:
+                        c.font = Font(bold=True,
+                                      color=(RED if abs(gap) > PRIOR_TOL else NAVY))
+                    if isinstance(v, float):
+                        c.number_format = NUM_FMT
+                        c.alignment = RIGHT
+                        if col == 4 and abs(v) > PRIOR_TOL:
+                            c.font = Font(bold=True, color=RED)
+        except Exception:
+            pass
+
+        # Header row
+        row += 1
+        for col, h in enumerate(HDR_ROW_LABELS, start=1):
+            c = ws.cell(row=row, column=col, value=h)
+            c.font = BOLD_WHITE
+            c.fill = FILL_NAVY
+            c.border = BORDER
+
+        # Pull custodian numbers from balance_check when available,
+        # otherwise derive from pool-side txn_matches.
+        ar = acct_lookup.get(pool_acct)
+        has_open = p.get("has_opening_balance")
+        if has_open and ar:
+            op_b = float(ar.get("opening_balance") or 0)
+            dr_b = float(ar.get("total_debits") or 0)
+            cr_b = float(ar.get("total_credits") or 0)
+        elif has_open:
+            op_b = float(p.get("cust_opening") or 0)
+            dr_b = round(sum(-t.get("cust_amount", 0) for t in (p.get("txn_matches") or [])
+                             if (t.get("cust_amount") or 0) < 0), 2)
+            cr_b = round(sum(t.get("cust_amount", 0) for t in (p.get("txn_matches") or [])
+                             if (t.get("cust_amount") or 0) > 0), 2)
+        else:
+            op_b = 0.0; dr_b = 0.0; cr_b = 0.0
+        cl_b = float(p.get("cust_closing") or 0)
+
+        # WS side — no per-txn breakdown available, split the net.
+        if has_open:
+            op_ws = float(p.get("ws_opening_sum") or 0)
+            ws_net = round(float(p.get("ws_closing_sum") or 0) - op_ws, 2)
+            dr_ws = round(max(0.0, -ws_net), 2)
+            cr_ws = round(max(0.0, ws_net), 2)
+        else:
+            op_ws = 0.0; dr_ws = 0.0; cr_ws = 0.0
+        cl_ws = float(p.get("ws_closing_sum") or 0)
+
+        def _row(lr: int, label: str, bv: float, wsv: float, fill: PatternFill) -> int:
+            lr += 1
+            diff = round((bv or 0.0) - (wsv or 0.0), 2)
+            for col, v in enumerate([label, bv, wsv, diff, ""], start=1):
+                c = ws.cell(row=lr, column=col, value=v)
+                c.fill = fill
+                c.border = BORDER
+                if col == 1:
+                    c.font = BOLD
+                elif isinstance(v, float):
+                    c.number_format = NUM_FMT
+                    c.alignment = RIGHT
+                    if col == 4 and abs(v) > PRIOR_TOL:
+                        c.font = Font(bold=True, color=RED)
+            return lr
+
+        row = _row(row, "Opening Balance", op_b, op_ws, OFIL)
+        row = _row(row, "Total Debits",    dr_b, dr_ws, DFIL)
+        row = _row(row, "Total Credits",   cr_b, cr_ws, CRFIL)
+
+        # Closing row with status tag
+        row += 1
+        cl_diff = round((cl_b or 0.0) - (cl_ws or 0.0), 2)
+        status_col = status_display.get(status, status)
+        for col, v in enumerate(["Closing Balance", cl_b, cl_ws, cl_diff, status_col], start=1):
+            c = ws.cell(row=row, column=col, value=v)
+            c.fill = CFIL2
+            c.border = BORDER
+            c.font = BOLD
+            if isinstance(v, float):
+                c.number_format = NUM_FMT
+                c.alignment = RIGHT
+                if col == 4 and abs(v) > PRIOR_TOL:
+                    c.font = Font(bold=True, color=RED)
+        row += 1  # blank gap after each pool block
+
+    for i, w in enumerate([26, 16, 16, 14, 14], start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+
+# ── Sheet 5: Cust Balance Check ──────────────────────────────────── #
+
+
+CUST_BAL_HEADERS = [
+    "Bank", "Account No", "Account Name", "As On",
+    "Opening", "Credits", "Debits", "Net",
+    "Computed", "Closing", "Variance", "Status",
+]
+
+
+def _build_cust_balance_check_sheet(ws, balance_check: dict[str, Any],
+                                    prior_closings: dict[str, tuple[str, float]]) -> None:
+    """Custodian-side balance check — one row per account, with a
+    'Prior-Day Closing' row above each main row showing the tie-out
+    gap against the last-recorded closing in the history log.
+    """
+    ws.merge_cells("A1:L1")
+    cell = ws["A1"]
+    from core.date_format import display_date as _disp_d
+    cell.value = f"Custodian Balance Check — {_disp_d(balance_check.get('date') or '')}"
+    cell.font = Font(bold=True, color=NAVY, size=13)
+    cell.alignment = LEFT
+
+    for i, h in enumerate(CUST_BAL_HEADERS, start=1):
+        c = ws.cell(row=3, column=i, value=h)
+        c.font = HDR_CELL
+        c.fill = FILL_NAVY
+        c.alignment = CENTER
+        c.border = BORDER
+
+    def _safe_float(x) -> float:
+        try:
+            return float(x) if x is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _status_fill_balance(status: str) -> PatternFill:
+        s = (status or "").upper()
+        if s in ("MATCH", "CLEAR"):
+            return FILL_GREEN
+        if s in ("MISMATCH", "BREAK"):
+            return FILL_RED
+        return FILL_GREY
+
+    results = sorted(
+        balance_check.get("results") or [],
+        key=lambda r: (str(r.get("bank") or ""), str(r.get("account_no") or "")),
+    )
+
+    row = 3
+    for res in results:
+        acct_no = str(res.get("account_no") or "")
+        # Prior-day row (wrapped so one bad entry can't fail the export)
+        try:
+            pd = prior_closings.get(acct_no)
+            if pd:
+                pd_date, pd_close_raw = pd
+                pd_close = _safe_float(pd_close_raw)
+                cust_open = _safe_float(res.get("opening_balance"))
+                gap = round(cust_open - pd_close, 2)
+                row += 1
+                fill = FILL_PRIOR_GAP if abs(gap) > PRIOR_TOL else FILL_PRIOR
+                label = f"Prior-Day Closing ({pd_date})"
+                if abs(gap) > PRIOR_TOL:
+                    label += f" → today opening gap: {gap:+,.2f}"
+                vals = [res.get("bank") or "", acct_no, label, pd_date,
+                        None, None, None, None, None, pd_close, None, "PRIOR"]
+                for col, v in enumerate(vals, start=1):
+                    c = ws.cell(row=row, column=col, value=v)
+                    c.fill = fill
+                    c.border = BORDER
+                    if isinstance(v, float):
+                        c.number_format = NUM_FMT
+                        c.alignment = RIGHT
+                    if col == 3 and abs(gap) > PRIOR_TOL:
+                        c.font = Font(bold=True, color=RED)
+        except Exception:
+            pass
+
+        # Main row
+        row += 1
+        status = str(res.get("status") or "")
+        fill = _status_fill_balance(status)
+        net = _safe_float(res.get("net_movement",
+                                  _safe_float(res.get("total_credits"))
+                                  - _safe_float(res.get("total_debits"))))
+        vals = [
+            res.get("bank") or "",
+            acct_no,
+            res.get("account_name") or "",
+            res.get("as_on_date") or "",
+            _safe_float(res.get("opening_balance")),
+            _safe_float(res.get("total_credits")),
+            _safe_float(res.get("total_debits")),
+            net,
+            _safe_float(res.get("computed_closing")),
+            _safe_float(res.get("closing_balance")),
+            _safe_float(res.get("variance")),
+            status,
+        ]
+        for col, v in enumerate(vals, start=1):
+            c = ws.cell(row=row, column=col, value=v)
+            c.fill = fill
+            c.border = BORDER
+            if isinstance(v, float):
+                c.number_format = NUM_FMT
+                c.alignment = RIGHT
+                if col == 11 and abs(v) > PRIOR_TOL:  # Variance
+                    c.font = Font(bold=True, color=RED)
+
+    for i, w in enumerate([10, 18, 36, 13, 16, 16, 16, 14, 16, 16, 14, 12], start=1):
         ws.column_dimensions[get_column_letter(i)].width = w

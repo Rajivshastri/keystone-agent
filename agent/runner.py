@@ -1261,11 +1261,39 @@ def _run_bank(job: PollJob) -> RunPush:
             ts = datetime.now(timezone.utc).strftime("%H%M%S")
             raw_path = str(out_dir / f"BankRecon_{date_str.replace('-', '')}_{ts}.xlsx")
             balance_dict = balance_summary.to_dict() if balance_summary else None
+
+            # Load prior-day closings so Pool Detail / Ledger / Cust
+            # Balance Check can render a "Prior-Day Closing" row above
+            # each pool. Strictly best-effort — if history is unreadable,
+            # we still export (just without the tie-out rows).
+            prior_closings: dict[str, tuple[str, float]] = {}
+            try:
+                import json as _json_pc
+                from core.bank_balance_history import history_path as _hp
+                _hist_path = _hp(str(fm.base_dir))
+                if _hist_path.exists():
+                    with _hist_path.open(encoding="utf-8") as _hf:
+                        _hist = _json_pc.load(_hf) or []
+                    _best: dict[str, tuple[str, float]] = {}
+                    for _entry in _hist:
+                        _acct = str(_entry.get("cust_account") or "")
+                        _ed   = str(_entry.get("date") or "")
+                        _cl   = _entry.get("cust_closing", 0)
+                        if not _acct or not _ed or _ed >= date_str:
+                            continue
+                        _ex = _best.get(_acct)
+                        if _ex is None or _ed > _ex[0]:
+                            _best[_acct] = (_ed, _cl)
+                    prior_closings = _best
+            except Exception as _pc_err:
+                log(f"Prior-day closing lookup skipped: {_pc_err}")
+
             export_bank_recon(
                 summary_dict,
                 raw_path,
                 balance_check=balance_dict,
                 recon_date=date_str,
+                prior_closings=prior_closings,
             )
             bank_output_path = _keystone_rename(raw_path, "bank", date_str)
             if bank_output_path:
