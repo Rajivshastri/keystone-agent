@@ -549,6 +549,21 @@ def _cmd_reminder_check(payload: dict[str, Any]) -> CommandResult:
     """
     settings = load_settings()
 
+    # Slice 2 of JIT-fetch redesign — reminders default OFF. Operators
+    # opt in via EK_REMINDERS_ENABLED in agent extras once they're
+    # running with ≥2 workers (reminder ticks compete with the poll
+    # loop and recon execution on a single-worker process).
+    from .setup import EK_REMINDERS_ENABLED
+    extras = settings.extras or {}
+    enabled_raw = str(extras.get(EK_REMINDERS_ENABLED, "")).strip().lower()
+    if enabled_raw not in ("1", "true", "yes", "on"):
+        return CommandResult.success({
+            "skipped": True,
+            "reason": "reminders_disabled",
+            "fired": 0,
+            "errors": 0,
+        })
+
     # Build the M365 config. Same helper the recon handlers use.
     azure_cfg = _azure_config_for_ingestor(settings)
     if azure_cfg is None:

@@ -37,6 +37,14 @@ EK_WS_USERNAME = "ws_portal_username"
 # or "nsdl" (NSDL Steady contract notes, mapid=195). Defaults to "0096".
 # Operators who've migrated to NSDL CN routing set this to "nsdl".
 EK_TRADE_DISPATCH_TYPE = "trade_dispatch_type"
+# Reminders default OFF (Slice 2 of JIT-fetch redesign). Operators can
+# flip to "true" once they're running the agent with ≥2 workers; the
+# single-worker default would have reminder ticks competing with poll
+# loops and recon execution on the same Python process.
+EK_REMINDERS_ENABLED = "reminders_enabled"
+# Test-mode email — divert outgoing mail to one address. Empty = OFF.
+# Mirrors Flask's azure.test_mode_email.
+EK_TEST_MODE_EMAIL = "test_mode_email"
 
 
 # Custodians whose feeds require a password to decrypt. All four active
