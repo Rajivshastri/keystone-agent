@@ -162,7 +162,8 @@ def _azure_config_for_ingestor(settings: AgentSettings) -> dict | None:
     secret store; everything else lives in settings.extras.
     """
     from .secrets import KEY_M365_CLIENT_SECRET, get_store
-    from .setup import EK_M365_CLIENT_ID, EK_M365_MAILBOX, EK_M365_TENANT_ID
+    from .setup import (EK_M365_CLIENT_ID, EK_M365_MAILBOX, EK_M365_TENANT_ID,
+                        EK_TEST_MODE_EMAIL)
 
     extras = settings.extras or {}
     cfg = {
@@ -171,8 +172,14 @@ def _azure_config_for_ingestor(settings: AgentSettings) -> dict | None:
         "client_secret": get_store().get(KEY_M365_CLIENT_SECRET) or "",
         "mailbox":       extras.get(EK_M365_MAILBOX, ""),
     }
+    # Required-fields check before adding the optional test_mode_email
+    # — otherwise a test-mode-only deployment with missing credentials
+    # would slip through.
     if not all(cfg.values()):
         return None
+    # Optional: test-mode email diverts every outgoing message to one
+    # address. Empty/missing → normal mail flow.
+    cfg["test_mode_email"] = str(extras.get(EK_TEST_MODE_EMAIL) or "").strip()
     return cfg
 
 

@@ -449,6 +449,25 @@ def create_app() -> FastAPI:
     <button type="submit" style="margin-top:16px">Save custodian passwords</button>
   </form>
 </div>
+
+<div class="card">
+  <div class="card-title">Operations toggles</div>
+  <p class="muted">Test Mode reroutes every outgoing email (recon summaries, custodian dispatch, reminders) to one address with a banner listing the originals — useful for end-to-end troubleshooting. Reminders are off by default; flip them on only when the agent is running with at least 2 workers.</p>
+  <form action="/api/setup/ops-toggles" method="post" autocomplete="off">
+    <label for="test_mode_email">Test Mode &mdash; divert all outgoing email to</label>
+    <input type="text" id="test_mode_email" name="test_mode_email"
+           value="{extras.get('test_mode_email','')}"
+           placeholder="leave blank to disable">
+    <p class="muted" style="margin:6px 0 0">When set, every outgoing email goes here instead of the original recipients. Banner inside the body lists where it would normally have gone.</p>
+    <label for="reminders_enabled" style="margin-top:14px">Hourly recon reminders</label>
+    <select id="reminders_enabled" name="reminders_enabled">
+      <option value="false" {'' if str(extras.get('reminders_enabled','')).strip().lower() in ('1','true','yes','on') else 'selected'}>Off (default)</option>
+      <option value="true"  {'selected' if str(extras.get('reminders_enabled','')).strip().lower() in ('1','true','yes','on') else ''}>On (requires &ge;2 workers)</option>
+    </select>
+    <p class="muted" style="margin:6px 0 0">When On, the agent fires hourly reminder emails for unexplained recon breaks. On a single-worker host, the reminder tick competes with the poll loop and recon execution; only enable if you've upgraded to a higher-spec deploy.</p>
+    <button type="submit" style="margin-top:16px">Save toggles</button>
+  </form>
+</div>
 """
         html = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>Setup · Keystone Agent</title>
@@ -503,6 +522,24 @@ def create_app() -> FastAPI:
         except Exception as e:  # noqa: BLE001
             return RedirectResponse(url=f"/setup?err={e}", status_code=303)
         return RedirectResponse(url="/setup?msg=WS+credentials+saved", status_code=303)
+
+    @app.post("/api/setup/ops-toggles")
+    async def api_setup_ops_toggles(request: Request) -> Any:
+        """Save Test Mode email + Reminders enable flag to extras."""
+        from .setup import EK_REMINDERS_ENABLED, EK_TEST_MODE_EMAIL
+        form = await request.form()
+        test_email = str(form.get("test_mode_email", "")).strip()
+        reminders  = str(form.get("reminders_enabled", "false")).strip().lower()
+        try:
+            settings = load_settings()
+            extras = dict(settings.extras or {})
+            extras[EK_TEST_MODE_EMAIL] = test_email
+            extras[EK_REMINDERS_ENABLED] = 'true' if reminders in ('1', 'true', 'yes', 'on') else 'false'
+            settings.extras = extras
+            save_settings(settings)
+        except Exception as e:  # noqa: BLE001
+            return RedirectResponse(url=f"/setup?err={e}", status_code=303)
+        return RedirectResponse(url="/setup?msg=Toggles+saved", status_code=303)
 
     @app.post("/api/setup/custodian-passwords")
     async def api_setup_custodians(request: Request) -> Any:
