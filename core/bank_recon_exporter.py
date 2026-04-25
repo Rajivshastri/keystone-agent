@@ -50,9 +50,14 @@ FILL_GREY = PatternFill("solid", fgColor="F4F6F9")
 FILL_PRIOR = PatternFill("solid", fgColor="EFEFEF")
 FILL_PRIOR_GAP = PatternFill("solid", fgColor="F8CBAD")
 
-# Prior-day tie-out tolerance (INR). Gaps inside this are shown as grey,
-# outside as red-bold.
-PRIOR_TOL = 0.05
+# Round-to-paise zero check — replaces the legacy 0.05 tolerance.
+# Pool-level classification is driven by overall_status (set by the
+# engine using the admin-configured rupee threshold).
+def _is_zero(x):
+    try:
+        return round(abs(float(x or 0.0)), 2) == 0.0
+    except (TypeError, ValueError):
+        return False
 
 BOLD_WHITE = Font(bold=True, color="FFFFFF", size=11)
 BOLD = Font(bold=True, size=11)
@@ -287,8 +292,12 @@ def _build_detail_sheet(ws, summary: dict[str, Any],
             if isinstance(v, float):
                 c.number_format = NUM_FMT
                 c.alignment = RIGHT
-                if i == 8 and abs(v) > 0.05:  # Variance
-                    c.font = Font(bold=True, color=RED)
+                if i == 8:  # Variance — colour from engine status
+                    _st = str(p.get("overall_status") or "")
+                    if _st == "Balance Break":
+                        c.font = Font(bold=True, color=RED)
+                    elif _st in ("Within Tolerance", "Transaction Break", "Settlement Timing"):
+                        c.font = Font(bold=True, color="8B6914")
             if i == 10 and v:
                 c.alignment = Alignment(wrap_text=True, vertical="center")
         row += 1
@@ -314,9 +323,9 @@ def _render_prior_row_detail(ws, row: int, p: dict,
         cust_open = float(p.get("cust_opening") or 0) if p.get("has_opening_balance") else 0.0
         gap = round(cust_open - pd_close, 2)
         label = f"Prior-Day Closing ({pd_date})"
-        if abs(gap) > PRIOR_TOL:
+        if not _is_zero(gap):
             label += f" → opening gap {gap:+,.2f}"
-        fill = FILL_PRIOR_GAP if abs(gap) > PRIOR_TOL else FILL_PRIOR
+        fill = FILL_PRIOR_GAP if not _is_zero(gap) else FILL_PRIOR
         # Col layout matches DETAIL_HEADERS.
         vals = [label, p.get("bank") or "", acct,
                 None, None, pd_close, None, None, "PRIOR", None]
@@ -327,7 +336,7 @@ def _render_prior_row_detail(ws, row: int, p: dict,
             if isinstance(v, float):
                 c.number_format = NUM_FMT
                 c.alignment = RIGHT
-            if i == 1 and abs(gap) > PRIOR_TOL:
+            if i == 1 and not _is_zero(gap):
                 c.font = Font(bold=True, color=RED)
         return row + 1
     except Exception:
@@ -593,22 +602,22 @@ def _build_ledger_sheet(ws, summary: dict[str, Any],
                 cust_open = float(p.get("cust_opening") or 0) if p.get("has_opening_balance") else 0.0
                 gap = round(cust_open - pd_close, 2)
                 row += 1
-                fill = FILL_PRIOR_GAP if abs(gap) > PRIOR_TOL else FILL_PRIOR
+                fill = FILL_PRIOR_GAP if not _is_zero(gap) else FILL_PRIOR
                 label = f"Prior-Day Closing ({pd_date})"
-                if abs(gap) > PRIOR_TOL:
+                if not _is_zero(gap):
                     label += f" → gap {gap:+,.2f}"
-                gap_val = gap if abs(gap) > PRIOR_TOL else None
+                gap_val = gap if not _is_zero(gap) else None
                 for col, v in enumerate([label, pd_close, None, gap_val, ""], start=1):
                     c = ws.cell(row=row, column=col, value=v)
                     c.fill = fill
                     c.border = BORDER
                     if col == 1:
                         c.font = Font(bold=True,
-                                      color=(RED if abs(gap) > PRIOR_TOL else NAVY))
+                                      color=(RED if not _is_zero(gap) else NAVY))
                     if isinstance(v, float):
                         c.number_format = NUM_FMT
                         c.alignment = RIGHT
-                        if col == 4 and abs(v) > PRIOR_TOL:
+                        if col == 4 and not _is_zero(v):
                             c.font = Font(bold=True, color=RED)
         except Exception:
             pass
@@ -661,7 +670,7 @@ def _build_ledger_sheet(ws, summary: dict[str, Any],
                 elif isinstance(v, float):
                     c.number_format = NUM_FMT
                     c.alignment = RIGHT
-                    if col == 4 and abs(v) > PRIOR_TOL:
+                    if col == 4 and not _is_zero(v):
                         c.font = Font(bold=True, color=RED)
             return lr
 
@@ -681,7 +690,7 @@ def _build_ledger_sheet(ws, summary: dict[str, Any],
             if isinstance(v, float):
                 c.number_format = NUM_FMT
                 c.alignment = RIGHT
-                if col == 4 and abs(v) > PRIOR_TOL:
+                if col == 4 and not _is_zero(v):
                     c.font = Font(bold=True, color=RED)
         row += 1  # blank gap after each pool block
 
@@ -750,9 +759,9 @@ def _build_cust_balance_check_sheet(ws, balance_check: dict[str, Any],
                 cust_open = _safe_float(res.get("opening_balance"))
                 gap = round(cust_open - pd_close, 2)
                 row += 1
-                fill = FILL_PRIOR_GAP if abs(gap) > PRIOR_TOL else FILL_PRIOR
+                fill = FILL_PRIOR_GAP if not _is_zero(gap) else FILL_PRIOR
                 label = f"Prior-Day Closing ({pd_date})"
-                if abs(gap) > PRIOR_TOL:
+                if not _is_zero(gap):
                     label += f" → today opening gap: {gap:+,.2f}"
                 vals = [res.get("bank") or "", acct_no, label, pd_date,
                         None, None, None, None, None, pd_close, None, "PRIOR"]
@@ -763,7 +772,7 @@ def _build_cust_balance_check_sheet(ws, balance_check: dict[str, Any],
                     if isinstance(v, float):
                         c.number_format = NUM_FMT
                         c.alignment = RIGHT
-                    if col == 3 and abs(gap) > PRIOR_TOL:
+                    if col == 3 and not _is_zero(gap):
                         c.font = Font(bold=True, color=RED)
         except Exception:
             pass
@@ -796,7 +805,7 @@ def _build_cust_balance_check_sheet(ws, balance_check: dict[str, Any],
             if isinstance(v, float):
                 c.number_format = NUM_FMT
                 c.alignment = RIGHT
-                if col == 11 and abs(v) > PRIOR_TOL:  # Variance
+                if col == 11 and not _is_zero(v):  # Variance
                     c.font = Font(bold=True, color=RED)
 
     for i, w in enumerate([10, 18, 36, 13, 16, 16, 16, 14, 16, 16, 14, 12], start=1):

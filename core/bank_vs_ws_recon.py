@@ -30,7 +30,21 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-TOLERANCE = 0.05   # INR — rounding across many client accounts can be > 0.01
+# Float-noise budget for txn-level matching only — accumulated rounding
+# across many summed client positions can exceed a single paise. NOT a
+# user-facing tolerance. Pool-level classification (Clean / Within
+# Tolerance / Balance Break) is driven entirely by the admin-configured
+# bank_tolerance_rs and a round-to-paise check (round(|V|, 2) == 0 →
+# essentially zero at the precision operators read on screen).
+_TXN_NOISE = 0.05
+
+
+def _round2_zero(x) -> bool:
+    """True when x rounds to ₹0.00 at paise precision."""
+    try:
+        return round(abs(float(x or 0.0)), 2) == 0.0
+    except (TypeError, ValueError):
+        return False
 
 
 # ── Transaction matching ──────────────────────────────────────────────────── #
@@ -187,7 +201,7 @@ class PoolReconResult:
         txn_break = self.has_opening_balance and any(
             not t.is_matched for t in self.txn_matches)
 
-        # L1 MATCH: closing balances agree within TOLERANCE — always Clean.
+        # L1 MATCH: closing balances agree at paise precision → Clean.
         if self.l1_status == 'MATCH' and not txn_break:
             return 'Clean'
 
@@ -196,10 +210,11 @@ class PoolReconResult:
             return 'Clean'
 
         # Settlement timing: adjust WS closing by pending settlement amount.
-        if (self.mf_orders_pending > 0
-                and abs(self.l1_variance) > TOLERANCE):
+        # When |variance| ≈ pending settlement, the bank is just T+1 behind
+        # WS — adjusted variance rounds to zero at paise.
+        if self.mf_orders_pending > 0 and not _round2_zero(self.l1_variance):
             _adjusted_var = abs(self.l1_variance) - self.mf_orders_pending
-            if abs(_adjusted_var) <= TOLERANCE:
+            if _round2_zero(_adjusted_var):
                 return 'Settlement Timing'
 
         # L2 NETTED BREAK: variance persists after netting artificial accounts
@@ -602,7 +617,7 @@ class BankVsWSReconEngine:
                 art_total   = 0.0
             else:
                 l1_variance = round(ca.closing_balance - ws_balance_sum, 2)
-                if abs(l1_variance) <= TOLERANCE:
+                if _round2_zero(l1_variance):
                     l1_status = 'MATCH'
                 elif l1_variance > 0:
                     l1_status = 'SHORTFALL'
@@ -617,7 +632,7 @@ class BankVsWSReconEngine:
                     l2_net    = 0.0
                 else:
                     l2_net    = round(l1_variance + art_total, 2)
-                    l2_status = 'COVERED' if abs(l2_net) <= TOLERANCE else 'NETTED BREAK'
+                    l2_status = 'COVERED' if _round2_zero(l2_net) else 'NETTED BREAK'
 
             # ── Opening balances ──
             cust_opening = ca.opening_balance
@@ -638,11 +653,11 @@ class BankVsWSReconEngine:
             # ── Cross-check: opening + net txns = closing? ──
             cust_net = round(cust_total_credits - cust_total_debits, 2)
             cust_computed_closing = round(cust_opening + cust_net, 2)
-            cust_cross_check_ok = abs(cust_computed_closing - ca.closing_balance) <= TOLERANCE
+            cust_cross_check_ok = _round2_zero(cust_computed_closing - ca.closing_balance)
 
             ws_net = round(ws_total_credits - ws_total_debits, 2)
             ws_computed_closing = round(ws_opening_sum + ws_net, 2)
-            ws_cross_check_ok = abs(ws_computed_closing - ws_balance_sum) <= TOLERANCE
+            ws_cross_check_ok = _round2_zero(ws_computed_closing - ws_balance_sum)
 
             if not cust_cross_check_ok and ca.has_opening_balance:
                 logger.warning(
@@ -839,7 +854,7 @@ class BankVsWSReconEngine:
             # variance, say so explicitly; otherwise just report the count.
             explains = (
                 pr.l1_status == 'SHORTFALL'
-                and abs(pool_amount - pr.l1_variance) <= max(TOLERANCE, abs(pr.l1_variance) * 0.01)
+                and _round2_zero(pool_amount - pr.l1_variance)
             )
             if explains:
                 pr.note = (
@@ -967,7 +982,7 @@ class BankVsWSReconEngine:
 
             # Try 1:1 exact match first
             exact = next(
-                ((t, acct) for t, acct in candidates if abs(t.amount - ct_amt) <= TOLERANCE),
+                ((t, acct) for t, acct in candidates if abs(t.amount - ct_amt) <= _TXN_NOISE),
                 None
             )
             if exact:
@@ -990,13 +1005,13 @@ class BankVsWSReconEngine:
                     continue
                 subset.append((t, acct))
                 running = round(running + t.amount, 2)
-                if abs(running - ct_amt) <= TOLERANCE:
+                if abs(running - ct_amt) <= _TXN_NOISE:
                     break
 
             ws_sum   = round(sum(t.amount for t, _ in subset), 2)
             variance = round(ct_amt - ws_sum, 2)
 
-            if abs(variance) <= TOLERANCE:
+            if abs(variance) <= _TXN_NOISE:
                 for t, _ in subset:
                     ws_used.add(id(t))
                 status = 'MATCHED'
