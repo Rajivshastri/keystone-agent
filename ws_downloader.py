@@ -417,9 +417,17 @@ def download_custody_interface(session: _requests.Session, base: str,
     report_url = m.group(1)
     data = _fetch(session, report_url, base)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Always overwrite — see run_all_downloads for the reasoning.
+    existed = out_path.exists()
+    if existed:
+        try:
+            out_path.unlink()
+        except Exception:
+            pass
     out_path.write_bytes(data)
     kb = len(data) // 1024
-    log.info(f"     CustInt [{interface_type}] saved: {out_path} ({kb} KB)")
+    log.info(f"     CustInt [{interface_type}] saved: {out_path} ({kb} KB)"
+             + (" [overwrote previous]" if existed else ""))
     return out_path
 
 
@@ -520,9 +528,21 @@ def run_all_downloads(date_obj: datetime, app_dir: Path,
         try:
             report_url = url_or_fn() if callable(url_or_fn) else url_or_fn
             data = _fetch(session, report_url, base)
+            # Always overwrite — operators sometimes re-publish an updated
+            # copy of the same report and the recon needs the latest. The
+            # explicit unlink avoids any cached attribute / partial-write
+            # ambiguity; write_bytes alone would truncate-and-rewrite, which
+            # is fine on its own but less obvious in code review.
+            existed = save_path.exists()
+            if existed:
+                try:
+                    save_path.unlink()
+                except Exception:
+                    pass
             save_path.write_bytes(data)
             kb = len(data) // 1024
-            log.info(f"  OK  {label} -> {save_path} ({kb} KB)")
+            log.info(f"  OK  {label} -> {save_path} ({kb} KB)"
+                     + (" [overwrote previous]" if existed else ""))
             if progress_cb:
                 progress_cb(label, "ok", f"{kb} KB — saved")
             results.append({"name": label, "status": "ok",

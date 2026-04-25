@@ -197,39 +197,60 @@ class EmailIngestor:
         active_sources = [s['name'] for s in sources if s.get('active', True)]
         log(f"Matching against {len(active_sources)} active source(s): {', '.join(active_sources)}")
 
+        # ── Pre-filter messages and parallelise the per-message
+        # /attachments GET. The metadata fetch is the dominant cost on
+        # busy days (one round-trip per matched message); pulling 5 in
+        # parallel cuts a 7-message day from ~12 s to ~3 s.
+        from concurrent.futures import ThreadPoolExecutor
+
+        prefiltered: list = []
         for msg in messages:
             if not msg.get('hasAttachments'):
-                # Log emails from known senders that lack attachments flag
                 _sender = msg.get('from', {}).get('emailAddress', {}).get('address', '').lower()
                 if any(ks in _sender for ks in _known_senders if ks):
                     log(f"  ⚠ Known sender but hasAttachments=false: "
                         f"from={_sender}, subject={msg.get('subject', '')[:60]}, "
                         f"received={msg.get('receivedDateTime', '')}")
                 continue
-
-            sender   = msg.get('from', {}).get('emailAddress', {}).get('address', '').lower()
-            subject  = msg.get('subject', '')
-            msg_id   = msg['id']
-            rcvd     = msg.get('receivedDateTime', '')
-
-            # Match message to a source
+            sender  = msg.get('from', {}).get('emailAddress', {}).get('address', '').lower()
+            subject = msg.get('subject', '')
             matched_source = self._match_source(sender, subject, sources)
             if not matched_source:
                 log(f"  No source match for: from={sender}, subject={subject[:40]}")
                 continue
+            prefiltered.append((msg, matched_source))
 
+        def _fetch_attachments(item):
+            msg, matched = item
+            msg_id = msg['id']
+            url = f"{GRAPH_BASE}/users/{self.mailbox}/messages/{msg_id}/attachments"
+            try:
+                resp = requests.get(url, headers=self._headers(), timeout=30)
+                resp.raise_for_status()
+                return msg, matched, resp.json().get('value', []), None
+            except Exception as e:
+                return msg, matched, None, str(e)
+
+        if prefiltered:
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                attachments_results = list(pool.map(_fetch_attachments, prefiltered))
+        else:
+            attachments_results = []
+
+        # ── Process matched messages serially after the parallel fetch.
+        # The downstream save / extract code touches FileManager state
+        # and writes to disk, so keeping it single-threaded avoids races
+        # on the per-source folders.
+        for msg, matched_source, attachments, att_err in attachments_results:
+            sender  = msg.get('from', {}).get('emailAddress', {}).get('address', '').lower()
+            subject = msg.get('subject', '')
+            msg_id  = msg['id']
+            rcvd    = msg.get('receivedDateTime', '')
             source_name = matched_source['name']
             log(f"  Matched: {source_name} — {subject[:40]} (received: {rcvd[:10]})")
-
-            # Get attachments
-            att_url = f"{GRAPH_BASE}/users/{self.mailbox}/messages/{msg_id}/attachments"
-            try:
-                att_resp = requests.get(att_url, headers=self._headers(), timeout=30)
-                att_resp.raise_for_status()
-                attachments = att_resp.json().get('value', [])
-            except Exception as e:
+            if att_err is not None:
                 results.append({'source': source_name, 'status': 'error',
-                                 'message': f"Failed to get attachments: {e}"})
+                                 'message': f"Failed to get attachments: {att_err}"})
                 continue
 
             for att in attachments:
