@@ -113,7 +113,8 @@ class EmailIngestor:
     def fetch_for_date(self, date_str: str, sources: List[dict],
                        file_manager, log_callback=None,
                        dt_start_override=None,
-                       dt_end_override=None) -> List[dict]:
+                       dt_end_override=None,
+                       mailbox_override: str = '') -> List[dict]:
         """
         Fetch all relevant emails for the given date from the shared mailbox.
         Downloads and extracts zip attachments to the correct source folder.
@@ -125,6 +126,12 @@ class EmailIngestor:
             log_callback:       Optional callable(msg) for real-time logging
             dt_start_override:  Optional datetime — overrides the default lookback window
             dt_end_override:    Optional datetime — overrides the default target+2d end
+            mailbox_override:   Optional mailbox UPN to use instead of
+                                self.mailbox. Used by callers that fan out
+                                one Graph call per (mailbox, sources_subset)
+                                group when a source declares a non-default
+                                mailbox in sources.json (e.g. value_research
+                                reads from vr@thegoldstandard.in).
 
         Returns:
             List of result dicts {source, file, status, message}
@@ -151,7 +158,12 @@ class EmailIngestor:
         dt_end_s   = dt_end.strftime('%Y-%m-%dT%H:%M:%SZ')
 
         _window_hours = int(round((dt_end - dt_start).total_seconds() / 3600))
-        log(f"Fetching emails from {self.mailbox} — window {dt_start_s} to {dt_end_s} "
+        # Per-source mailbox override. Most sources land in the default
+        # operations@thegoldstandard.in inbox; Value Research sends to
+        # vr@thegoldstandard.in. When a non-empty mailbox_override is
+        # passed, every Graph URL in this call uses it.
+        mb = (mailbox_override or self.mailbox).strip()
+        log(f"Fetching emails from {mb} — window {dt_start_s} to {dt_end_s} "
             f"(~{_window_hours}h)")
         log(f"Matching by sender address and zip filename prefix only")
 
@@ -159,7 +171,7 @@ class EmailIngestor:
         # override the default lookback via dt_start_override / dt_end_override
         # (the incremental fetch path uses a 30-min overlap).
         # Graph API max per page is 100 — follow @odata.nextLink until exhausted
-        first_url = (f"{GRAPH_BASE}/users/{self.mailbox}/messages"
+        first_url = (f"{GRAPH_BASE}/users/{mb}/messages"
                      f"?$filter=receivedDateTime ge {dt_start_s} "
                      f"and receivedDateTime lt {dt_end_s}"
                      f"&$select=id,subject,from,hasAttachments,receivedDateTime"
@@ -223,7 +235,7 @@ class EmailIngestor:
         def _fetch_attachments(item):
             msg, matched = item
             msg_id = msg['id']
-            url = f"{GRAPH_BASE}/users/{self.mailbox}/messages/{msg_id}/attachments"
+            url = f"{GRAPH_BASE}/users/{mb}/messages/{msg_id}/attachments"
             try:
                 resp = requests.get(url, headers=self._headers(), timeout=30)
                 resp.raise_for_status()
@@ -599,7 +611,8 @@ class EmailIngestor:
 
     def fetch_for_range(self, date_from: str, date_to: str,
                         sources: List[dict], file_manager,
-                        log_callback=None, since: str = None) -> List[dict]:
+                        log_callback=None, since: str = None,
+                        mailbox_override: str = '') -> List[dict]:
         """
         Fetch all emails across a date range.
 
@@ -647,6 +660,7 @@ class EmailIngestor:
                     log_callback=log_callback,
                     dt_start_override=dt_start,
                     dt_end_override=dt_end,
+                    mailbox_override=mailbox_override,
                 )
 
         # --- Full fetch: 3-day pivot stepping (admin override / first fetch) ---
@@ -668,7 +682,8 @@ class EmailIngestor:
         for pivot in pivot_dates:
             log(f"--- Fetching window centred on {pivot} ---")
             batch = self.fetch_for_date(pivot, sources, file_manager,
-                                        log_callback=log_callback)
+                                        log_callback=log_callback,
+                                        mailbox_override=mailbox_override)
             all_results.extend(batch)
 
         return all_results
@@ -1399,7 +1414,8 @@ class EmailIngestor:
     def archive_for_date(self, date_str: str, sources: List[dict],
                          archive_base_dir: str,
                          log_callback=None,
-                         since: Optional[str] = None) -> dict:
+                         since: Optional[str] = None,
+                         mailbox_override: str = '') -> dict:
         """
         Archive all emails (body + attachments) from configured sender addresses
         for the lookback window around date_str.
@@ -1455,8 +1471,11 @@ class EmailIngestor:
         dt_start_s = dt_start.strftime('%Y-%m-%dT%H:%M:%SZ')
         dt_end_s   = dt_end.strftime('%Y-%m-%dT%H:%M:%SZ')
 
+        # Per-source mailbox override (mirrors fetch_for_date).
+        mb = (mailbox_override or self.mailbox).strip()
+
         # Fetch messages including body (need a separate select to get body)
-        first_url = (f"{GRAPH_BASE}/users/{self.mailbox}/messages"
+        first_url = (f"{GRAPH_BASE}/users/{mb}/messages"
                      f"?$filter=receivedDateTime ge {dt_start_s} "
                      f"and receivedDateTime lt {dt_end_s}"
                      f"&$select=id,subject,from,hasAttachments,"
@@ -1532,7 +1551,7 @@ class EmailIngestor:
             if not msg.get('hasAttachments'):
                 continue
 
-            att_url = f"{GRAPH_BASE}/users/{self.mailbox}/messages/{msg_id}/attachments"
+            att_url = f"{GRAPH_BASE}/users/{mb}/messages/{msg_id}/attachments"
             try:
                 att_resp = requests.get(att_url, headers=self._headers(), timeout=30)
                 att_resp.raise_for_status()

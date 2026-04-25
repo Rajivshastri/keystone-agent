@@ -147,6 +147,23 @@
       "take_last_only": false,
       "zip_name_prefix": "GOLDSTANDARD WEALTH PVT LTD MYSTIC",
       "zip_password": "AALCG4181G"
+    },
+    {
+      "active": true,
+      "attachment_type": "direct",
+      "display_name": "Value Research — NAV Update",
+      "file_date_offset": 0,
+      "file_password": "",
+      "is_bank": false,
+      "mailbox": "vr@thegoldstandard.in",
+      "name": "value_research",
+      "notes": "Daily NAV update CSVs from Value Research. VR sends to vr@thegoldstandard.in (NOT the default operations@ mailbox), so the source declares an explicit mailbox override. Files NAVUpdate-DDMMYYYY-N.csv where DDMMYYYY = NAV date + 1.",
+      "parser": "",
+      "sender_email": "dataservices@valueresearchonline.com",
+      "subject_keyword": "NAV Update",
+      "take_last_only": false,
+      "zip_name_prefix": "",
+      "zip_password": ""
     }
   ]
 }
