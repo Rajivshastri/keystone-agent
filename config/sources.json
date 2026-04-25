@@ -157,7 +157,7 @@
       "is_bank": false,
       "mailbox": "vr@thegoldstandard.in",
       "name": "value_research",
-      "notes": "Daily NAV update CSVs from Value Research. VR sends to vr@thegoldstandard.in (NOT the default operations@ mailbox), so the source declares an explicit mailbox override. Files NAVUpdate-DDMMYYYY-N.csv where DDMMYYYY = NAV date + 1.",
+      "notes": "Daily NAV update CSVs from Value Research. VR sends to vr@thegoldstandard.in (NOT the default operations@ mailbox). Files NAVUpdate-DDMMYYYY-N.csv where DDMMYYYY = receipt day; NAV date = DDMMYYYY - 1 (NAVs are for the previous day). The flask app's Workflows hub routes files into raw/value_research/{nav_date}/ before posting to WS Map ID 46.",
       "parser": "",
       "sender_email": "dataservices@valueresearchonline.com",
       "subject_keyword": "NAV Update",
