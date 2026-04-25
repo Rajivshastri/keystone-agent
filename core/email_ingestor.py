@@ -53,12 +53,31 @@ class EmailIngestor:
         self.client_id     = azure_config.get('client_id', '').strip()
         self.client_secret = azure_config.get('client_secret', '').strip()
         self.mailbox       = azure_config.get('mailbox', '').strip()
+        # Test mode: divert all outgoing email to a single address.
+        self.test_mode_email = str(azure_config.get('test_mode_email') or '').strip()
         self._token        = None
         self._token_expiry = None
 
     def is_configured(self) -> bool:
         return all([self.tenant_id, self.client_id,
                     self.client_secret, self.mailbox])
+
+    def _apply_test_mode(self, recipients: list, body_html: str) -> tuple:
+        """When test_mode_email is set, divert outgoing mail there and
+        prepend a banner listing the originals."""
+        if not self.test_mode_email:
+            return recipients, body_html
+        original = ', '.join(r.strip() for r in (recipients or []) if r and r.strip()) \
+            or '(no recipients)'
+        banner = (
+            '<div style="background:#FFF3CD;border:1px solid #B06820;'
+            'border-radius:4px;padding:10px 14px;margin-bottom:14px;'
+            'font-family:Arial,sans-serif;font-size:12px;color:#5C3D11">'
+            '<strong>&#9888; TEST MODE</strong> &mdash; would normally have gone to: '
+            f'<code style="font-family:monospace">{original}</code>'
+            '</div>'
+        )
+        return [self.test_mode_email], banner + (body_html or '')
 
     # ------------------------------------------------------------------ #
     #  Auth                                                                 #
@@ -926,6 +945,9 @@ class EmailIngestor:
             except Exception as e:
                 logger.warning(f"Could not attach file: {e}")
 
+        # Test-mode rewrite — diverts to a single address when configured.
+        recipients, html_body = self._apply_test_mode(recipients, html_body)
+
         payload = {
             'message': {
                 'subject': subject,
@@ -1122,6 +1144,9 @@ class EmailIngestor:
             except Exception as e:
                 logger.warning(f"Could not attach file: {e}")
 
+        # Test-mode rewrite — diverts to a single address when configured.
+        recipients, html_body = self._apply_test_mode(recipients, html_body)
+
         payload = {
             'message': {
                 'subject': subject,
@@ -1228,6 +1253,9 @@ class EmailIngestor:
             except Exception as e:
                 logger.warning(f'Reminder attach failed: {e}')
 
+        # Test-mode rewrite — diverts to a single address when configured.
+        recipients, html_body = self._apply_test_mode(recipients, html_body)
+
         payload = {
             'message': {
                 'subject': subject,
@@ -1312,6 +1340,9 @@ class EmailIngestor:
             f'<p style="font-size:12px;color:#667;margin-top:16px">See attached Excel file for full reconciliation details.</p>'
             f'</div></div>'
         )
+
+        # Test-mode rewrite — diverts to a single address when configured.
+        recipients, body_html = self._apply_test_mode(recipients, body_html)
 
         to_recipients = [{'emailAddress': {'address': r}} for r in recipients]
         payload = {'message': {'subject': subject,
