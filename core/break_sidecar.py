@@ -45,24 +45,27 @@ def write_bank_sidecar(
 ) -> None:
     """Write the sidecar for a bank recon run.
 
-    Extracts pool break rows from the engine summary. A row is
-    considered a break (and therefore explained-eligible) when its
-    ``overall_status`` is anything other than ``CLEAN``. Pools without
-    a ``cust_account`` (the synthetic NOT-IN-WS aggregates) are
-    included because they can still surface as breaks on the
-    dashboard and operators may want to explain them.
+    Includes ALL pools, not just breaks. The control plane's run-view
+    chip drill-down uses the same sidecar to show Clean / Within
+    Tolerance / Not In WS pools when an operator clicks a non-break
+    chip. The explain page (which only handles break-status pools)
+    filters by status on its end. Each row carries its ``status`` and
+    a stable ``break_id`` so the dashboard can group + filter without
+    re-running the engine.
 
-    Schema of each row, as the control plane explain page expects:
+    Schema of each row:
         {
           break_id:        stable unique id (cust_account for real
-                           pools, pool_id for synthetic)
+                           pools, strategy_name for synthetic)
           pool:            strategy_name
           bank:            HDFC / AXIS / ICICI / KOTAK
           cust_account:    account number or empty
           cust_closing:    closing balance from the bank file
           ws_closing:      closing balance from the WS Bank Book
           variance:        l1_variance (cust - ws)
-          status:          overall_status (MATCH / BREAK / TXN ONLY / etc)
+          status:          overall_status (Clean / Within Tolerance /
+                           Balance Break / Transaction Break /
+                           Settlement Timing / No Statement / Not in WS)
           explained_items: any pre-existing explained_items from the
                            engine (reused by the ₹100 rule)
         }
@@ -71,12 +74,8 @@ def write_bank_sidecar(
         pool_results = summary_dict.get("pool_results", []) or []
         rows = []
         for pool in pool_results:
-            status = str(pool.get("overall_status") or "").upper()
-            if status in ("", "MATCH", "CLEAN"):
-                continue
+            status = str(pool.get("overall_status") or "")
             cust_acct = (pool.get("cust_account") or "").strip()
-            # Stable id: prefer cust_account (unique), fall back to
-            # strategy_name for synthetic pools.
             break_id = cust_acct or str(pool.get("strategy_name") or "")
             if not break_id:
                 continue
@@ -104,17 +103,27 @@ def write_holdings_sidecar(
 ) -> None:
     """Write the sidecar for a holdings recon run.
 
-    Extracts rows from the three "break" categories (unexplained,
-    custody_only, ws_only) and flattens them into a single list with
-    a ``category`` field so the dashboard can group by category.
+    Includes rows from ALL categories — clean, pending_explained,
+    minor_break, unexplained, custody_only, ws_only, unverified — so
+    the control plane's run-view chip drill-down can show non-break
+    rows alongside the break categories the explain page already
+    handles. The explain page filters by category on its end.
 
-    Each break row is the engine's native dict shape plus two keys:
+    Each row is the engine's native dict shape plus two keys:
         break_id: ``{category}:{client_id}:{isin}`` stable id
         category: which bucket the row came from
     """
     try:
         rows = []
-        for category in ("unexplained", "custody_only", "ws_only"):
+        for category in (
+            "clean",
+            "pending_explained",
+            "minor_break",
+            "unexplained",
+            "custody_only",
+            "ws_only",
+            "unverified",
+        ):
             for r in results.get(category, []) or []:
                 client_id = str(r.get("client_id") or "")
                 isin = str(r.get("isin") or "")

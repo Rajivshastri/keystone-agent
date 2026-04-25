@@ -34,7 +34,6 @@ HOLDINGS_COUNT_KEYS: frozenset[str] = frozenset({
     "minor_break",
     "custody_only",
     "ws_only",
-    "advisory",
     "unverified",
     "pending_explained",
     "comments_count",
@@ -44,12 +43,14 @@ HOLDINGS_COUNT_KEYS: frozenset[str] = frozenset({
 BANK_COUNT_KEYS: frozenset[str] = frozenset({
     "total_pools",
     "clean",
+    "within_tolerance",
     "breaks",
     "covered",
     "not_in_ws",
     "not_mapped",
     "balance_breaks",
     "transaction_breaks",
+    "settlement_timing",
     "no_statement",
 })
 

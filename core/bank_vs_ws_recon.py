@@ -234,15 +234,20 @@ class PoolReconResult:
 
     def _apply_rupee_tolerance(self, break_status: str) -> str:
         """Downgrade a Balance Break to 'Within Tolerance' when the variance
-        falls inside the admin-configured rupee tolerance. Returns the
-        unchanged break_status when no tolerance is configured or the
-        variance exceeds it.
+        falls inside the admin-configured rupee tolerance.
+
+        Within Tolerance is *strictly positive* and at most the configured
+        rupee threshold (`0 < |variance| ≤ tolerance`). Variance exactly at
+        zero is Clean, never WT — even if some upstream classification path
+        ended up calling this with break_status='Balance Break' and zero
+        variance, we don't want to demote a true match.
         """
         if self.within_tolerance_rs is None:
             return break_status
         if break_status != 'Balance Break':
             return break_status
-        if abs(self.l1_variance or 0.0) <= float(self.within_tolerance_rs):
+        var_abs = abs(self.l1_variance or 0.0)
+        if 0 < var_abs <= float(self.within_tolerance_rs):
             return 'Within Tolerance'
         return break_status
 
@@ -341,11 +346,38 @@ class BankReconSummary:
 
     @property
     def breaks(self) -> int:
-        # Breaks are actionable findings — 'Within Tolerance' is amber but
-        # not a break (doesn't require explanation; doesn't block the
-        # final email).
+        # Breaks are actionable findings that drive the run-level
+        # `breaks_found` status. 'Within Tolerance' is amber but not a
+        # break (doesn't require explanation; doesn't block the final
+        # email). Settlement Timing / No Statement are tracked
+        # separately for the dashboard chip surface.
         return sum(1 for r in self.pool_results
                    if r.overall_status in ('Balance Break', 'Transaction Break'))
+
+    @property
+    def balance_breaks(self) -> int:
+        return sum(1 for r in self.pool_results
+                   if r.overall_status == 'Balance Break')
+
+    @property
+    def transaction_breaks(self) -> int:
+        return sum(1 for r in self.pool_results
+                   if r.overall_status == 'Transaction Break')
+
+    @property
+    def settlement_timing(self) -> int:
+        return sum(1 for r in self.pool_results
+                   if r.overall_status == 'Settlement Timing')
+
+    @property
+    def no_statement(self) -> int:
+        return sum(1 for r in self.pool_results
+                   if r.overall_status == 'No Statement')
+
+    @property
+    def not_in_ws(self) -> int:
+        return sum(1 for r in self.pool_results
+                   if r.overall_status == 'Not in WS')
 
     def to_dict(self) -> dict:
         return {
@@ -355,6 +387,11 @@ class BankReconSummary:
             'within_tolerance':     self.within_tolerance,
             'covered':              self.covered,
             'breaks':               self.breaks,
+            'balance_breaks':       self.balance_breaks,
+            'transaction_breaks':   self.transaction_breaks,
+            'settlement_timing':    self.settlement_timing,
+            'no_statement':         self.no_statement,
+            'not_in_ws':            self.not_in_ws,
             'pool_results':         [r.to_dict() for r in self.pool_results],
             'artificial_summaries': [a.to_dict() for a in self.artificial_summaries],
             'ws_only_accounts':     self.ws_only_accounts,
