@@ -484,6 +484,11 @@ def execute_command(cmd_kind: str, payload: dict[str, Any]) -> CommandResult:
         # P7: standing rules for agent autonomy
         if cmd_kind == "set_standing_rule":
             return _cmd_set_standing_rule(payload)
+        # Operator-driven dispatch-type change pushed from CP. Mirrors a
+        # Settings click in the CP UI; agent persists to extras so the
+        # next trade-recon dispatch routes through 0096 or NSDL as picked.
+        if cmd_kind == "set_dispatch_type":
+            return _cmd_set_dispatch_type(payload)
         # Masters: on-demand WS fetch + merge with local extras
         if cmd_kind == "master_client_list":
             return _cmd_master_client_list(payload)
@@ -847,6 +852,35 @@ def _cmd_send_final_email(payload: dict[str, Any]) -> CommandResult:
 def _cmd_set_standing_rule(payload: dict[str, Any]) -> CommandResult:
     # P7 — filled in later
     return CommandResult.failure("set_standing_rule handler not yet implemented")
+
+
+def _cmd_set_dispatch_type(payload: dict[str, Any]) -> CommandResult:
+    """Persist the operator-selected post-trade-recon dispatch type
+    (0096 vs NSDL Steady) to the agent's extras. Next trade-recon
+    auto-dispatch reads it from there and routes accordingly.
+
+    Payload: {"trade_dispatch_type": "0096" | "nsdl"}
+    """
+    from .config import load_settings, save_settings
+    from .setup import EK_TRADE_DISPATCH_TYPE
+    new_value = str((payload or {}).get("trade_dispatch_type", "")).strip().lower()
+    if new_value not in ("0096", "nsdl"):
+        return CommandResult.failure(
+            f"invalid trade_dispatch_type: {new_value!r} (expected '0096' or 'nsdl')"
+        )
+    try:
+        settings = load_settings()
+        extras = dict(settings.extras or {})
+        old_value = extras.get(EK_TRADE_DISPATCH_TYPE, "0096")
+        extras[EK_TRADE_DISPATCH_TYPE] = new_value
+        settings.extras = extras
+        save_settings(settings)
+        return CommandResult.success({
+            "trade_dispatch_type": new_value,
+            "previous_value": old_value,
+        })
+    except Exception as e:  # noqa: BLE001
+        return CommandResult.failure(f"persist failed: {type(e).__name__}: {e}")
 
 
 # ── Pre-reconciliation pipeline ────────────────────────────────────── #
