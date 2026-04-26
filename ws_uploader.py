@@ -345,7 +345,18 @@ def upload_0096(file_path: str, progress_cb=None, config_dir: Path = None,
         return UploadResult(False,
                             "WS rejected: file already uploaded and duplicates are not allowed for this map")
 
-    effective_action = action_str if action_str in ("next", "nextWithOKContinue") else "nextWithOKContinue"
+    # Echo the server's actionString verbatim. Two well-known values:
+    #   "next"               — fresh upload
+    #   "nextWithOKContinue" — duplicate but operator overrode
+    # Substituting "nextWithOKContinue" when the server returned "next"
+    # would falsely tell WS the operator clicked OK on a duplicate
+    # warning that was never shown.
+    if action_str not in ("next", "nextWithOKContinue"):
+        log.warning(f"upload_0096 — unexpected actionString {action_str!r}; "
+                    f"aborting before kick-off")
+        return UploadResult(False,
+                            f"unrecognised actionString from WS: {action_str!r}")
+    effective_action = action_str
 
     # ── Step 3b: Run the mapper (mode=errorPage) ─────────────────────────
     # POST queryTradePosting.do with mode=errorPage. The page's JS calls

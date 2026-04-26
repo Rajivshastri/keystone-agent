@@ -549,7 +549,12 @@ class EmailIngestor:
                         # (bank statement) — keep CSVs so bank recon can find them.
                         is_bank_source = is_bank_source_flag
                         is_kotak = source_name in ('kotak', 'kotak_bank')
-                        if not is_bank_source and not is_kotak and fname.lower().endswith(('.zip', '.csv')):
+                        # Sources with keep_csv_in_zip=true (e.g. Vidal EoD) —
+                        # the zip is purpose-built around its CSV, not a
+                        # holdings zip with a misrouted bank statement.
+                        keep_csv = matched_source.get('keep_csv_in_zip', False)
+                        if (not is_bank_source and not is_kotak and not keep_csv
+                                and fname.lower().endswith(('.zip', '.csv'))):
                             continue
                         if fname.lower().endswith('.zip'):
                             continue   # never route nested zips regardless
@@ -569,7 +574,9 @@ class EmailIngestor:
                         else:
                             holding_date = self._holding_date_from_filename(
                                 fname, date_str, offset, received_date=rcvd,
-                                is_bank=is_bank_source_flag
+                                is_bank=is_bank_source_flag,
+                                filename_date_format=matched_source.get(
+                                    'filename_date_format', ''),
                             )
                         final_dir = str(file_manager.raw_dir(holding_date, dest_folder))
                         Path(final_dir).mkdir(parents=True, exist_ok=True)
@@ -696,7 +703,8 @@ class EmailIngestor:
     def _holding_date_from_filename(filename: str, requested_date: str,
                                     offset: int,
                                     received_date: str = '',
-                                    is_bank: bool = False) -> str:
+                                    is_bank: bool = False,
+                                    filename_date_format: str = '') -> str:
         """
         Derive the data date from a filename + email metadata.
 
@@ -728,16 +736,31 @@ class EmailIngestor:
                 pass
 
         # ── Date patterns in filename ─────────────────────────────────
-        patterns = [
-            (r'(\d{2})(\d{2})(\d{4})', '%d%m%Y'),   # DDMMYYYY e.g. 18032026
-            (r'(\d{4})(\d{2})(\d{2})', '%Y%m%d'),   # YYYYMMDD e.g. 20260318
-            (r'(\d{1,2})[_\-](\d{1,2})[_\-](\d{4})', None),  # D_M_YYYY / DD-MM-YYYY
-        ]
+        # Sources with `filename_date_format` in their config get a more
+        # specific pattern set (e.g. Vidal's XX{DDMMYY} short-year names
+        # that the default 8-digit regex misses). Default falls through
+        # to the original 8-digit-or-separated patterns.
+        if filename_date_format == 'DDMMYY':
+            patterns = [
+                # 2-letter prefix + DDMMYY at start; resolves YY → 20YY
+                (r'^[A-Za-z]{2}(\d{2})(\d{2})(\d{2})\b', 'DDMMYY'),
+            ]
+        else:
+            patterns = [
+                (r'(\d{2})(\d{2})(\d{4})', '%d%m%Y'),   # DDMMYYYY e.g. 18032026
+                (r'(\d{4})(\d{2})(\d{2})', '%Y%m%d'),   # YYYYMMDD e.g. 20260318
+                (r'(\d{1,2})[_\-](\d{1,2})[_\-](\d{4})', None),  # D_M_YYYY / DD-MM-YYYY
+            ]
 
         for pattern, fmt in patterns:
             for m in re.finditer(pattern, filename):
                 try:
-                    if fmt:
+                    if fmt == 'DDMMYY':
+                        g = m.groups()
+                        file_dt = datetime.strptime(
+                            f"{g[0]}/{g[1]}/20{g[2]}", '%d/%m/%Y'
+                        )
+                    elif fmt:
                         file_dt = datetime.strptime(m.group(0), fmt)
                     else:
                         g = m.groups()
