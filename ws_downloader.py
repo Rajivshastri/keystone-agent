@@ -233,6 +233,15 @@ def _fetch(session: _requests.Session, url: str, base: str) -> bytes:
     log.info(f"     Fetching: {full}")
     r = session.get(full, timeout=120)
     r.raise_for_status()
+    # WS returns 200 + HTML for session-expired / form-failed. Don't let
+    # an error page get written as a report file (operator opens the
+    # supposedly-Excel file and gets login HTML).
+    head = r.content[:8]
+    if head[:5].lower() in (b"<html", b"<!doc") or head[:5] == b"<?xml":
+        snippet = r.text[:200].strip().replace("\n", " ")
+        raise RuntimeError(
+            f"WS returned HTML instead of a report ({len(r.content)} bytes): {snippet!r}"
+        )
     return r.content
 
 

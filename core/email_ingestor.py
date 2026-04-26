@@ -46,6 +46,25 @@ def _normalize_senders(source: dict) -> list:
     return []
 
 
+def _normalize_zip_prefixes(source: dict) -> list:
+    """Return zip_name_prefix values as a list (stripped, case-preserved).
+
+    Accepts either a string (legacy) or a list — parallel to sender_email.
+    Custodians sometimes rename their attachments (e.g. ICICI sends both
+    "End_Client_Holding_GOLDWLTH_*.zip" and
+    "PMS_Holding_ISIN_Wise_GOLDWLTH_*.zip"), so an attachment is accepted
+    if its name starts with ANY of the listed prefixes.
+
+    Empty / missing → empty list (no prefix filtering).
+    """
+    raw = source.get('zip_name_prefix')
+    if isinstance(raw, list):
+        return [str(x).strip() for x in raw if x and str(x).strip()]
+    if isinstance(raw, str) and raw.strip():
+        return [raw.strip()]
+    return []
+
+
 class EmailIngestor:
 
     def __init__(self, azure_config: dict):
@@ -288,10 +307,17 @@ class EmailIngestor:
                     elif not att_name.lower().endswith('.zip'):
                         continue
 
-                # Check zip name prefix if configured (for zip attachments)
-                zip_prefix = matched_source.get('zip_name_prefix', '')
-                if zip_prefix and not att_name.startswith(zip_prefix):
-                    log(f"    Skipping attachment (prefix mismatch): {att_name}")
+                # Check zip name prefix if configured (for zip attachments).
+                # zip_name_prefix may be a string (legacy) or a list of
+                # acceptable prefixes — match if the filename starts with
+                # ANY of them. Custodians sometimes rename their zips
+                # (ICICI now sends two patterns in parallel).
+                zip_prefixes = _normalize_zip_prefixes(matched_source)
+                if zip_prefixes and not any(
+                    att_name.startswith(p) for p in zip_prefixes
+                ):
+                    log(f"    Skipping attachment (prefix mismatch): {att_name}"
+                        f" (expected start with: {zip_prefixes})")
                     continue
 
                 # Check file prefix if configured (for direct attachments)

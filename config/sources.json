@@ -15,7 +15,10 @@
       "subject_keyword": "HOLDING REPORT",
       "subject_prefix": "",
       "take_last_only": true,
-      "zip_name_prefix": "End_Client",
+      "zip_name_prefix": [
+        "End_Client",
+        "PMS_Holding_ISIN_Wise_GOLDWLTH"
+      ],
       "zip_password": "ICICIsms@20693023"
     },
     {
