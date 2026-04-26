@@ -173,6 +173,7 @@
       "is_bank": false,
       "keep_csv_in_zip": true,
       "mailbox": "vidal@thegoldstandard.in",
+      "mailbox_fallback": ["operations@thegoldstandard.in"],
       "name": "vidal",
       "notes": "T0 EoD price + corp-action files. Sender support@vidalsolutions.com → vidal@thegoldstandard.in. Zip XXDDMMYY.zip contains a single CSV with same name. The flask EoD pipeline consumes XC*.csv (corp action), WY*.csv (BSE prices), WE*.csv (NSE prices). keep_csv_in_zip=true tells the email_ingestor to keep CSVs from holdings-style zip extraction; filename_date_format=DDMMYY enables the 6-digit XC/WY/WE date pattern.",
       "parser": "",
