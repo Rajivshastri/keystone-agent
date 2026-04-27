@@ -201,7 +201,8 @@ def _norm_name(s: str) -> str:
 # ── Main workflow ─────────────────────────────────────────────────────────── #
 
 def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
-                    pool_map_raw: dict, out_dir: str, log_fn) -> TradeReconResult:
+                    pool_map_raw: dict, out_dir: str, log_fn,
+                    dealer_paths: list | None = None) -> TradeReconResult:
     """
     Orchestrate trade reconciliation: load all files, run engine, write reports.
 
@@ -213,6 +214,12 @@ def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
         pool_map_raw:  Raw pool_map.json dict (for CBD prefix matching).
         out_dir:       Output directory path string.
         log_fn:        Callable(msg, level='info') for logging.
+        dealer_paths:  Optional explicit list of dealer grid file paths to
+                       include. When provided, these (and only these) are
+                       loaded — used by the trade-recon UI when the
+                       operator picks specific grids to combine. When
+                       omitted, falls back to fm.get_dealer_file's
+                       single-latest-grid behaviour.
 
     Returns:
         TradeReconResult with summary, file paths, and counts.
@@ -441,25 +448,77 @@ def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
     cbd_client_map = _build_cbd_client_map(cbd_path, ws_orders, pool_map_raw)
     log_fn(f"CBD mapping: {len(cbd_client_map)} client codes mapped")
 
-    # ── Load dealer file ──────────────────────────────────────────────────── #
-    dealer_path   = fm.get_dealer_file(date_str)
+    # ── Load dealer file(s) ──────────────────────────────────────────────── #
+    # Default: latest single grid (legacy behaviour, what fm.get_dealer_file
+    # has always done). When the caller hands us an explicit list — the
+    # trade-recon UI does this when the operator picks multiple grids —
+    # honour it verbatim and concatenate trades across files. Each file
+    # is parsed independently; trades from all selected files end up in
+    # one list before the engine runs.
+    if dealer_paths is None:
+        _single = fm.get_dealer_file(date_str)
+        dealer_paths_eff = [_single] if _single else []
+    else:
+        dealer_paths_eff = [p for p in (dealer_paths or []) if p]
+
     dealer_trades = []
-    if dealer_path:
-        dp_result = DealerParser().parse_file(dealer_path)
-        if dp_result.ok:
-            try:
-                _recon_fmt = datetime.strptime(date_str, '%Y-%m-%d').strftime('%d/%m/%Y')
-            except ValueError:
-                _recon_fmt = date_str
-            today = [t for t in dp_result.trades if not t.trade_date or t.trade_date == _recon_fmt]
-            other = [t for t in dp_result.trades if t.trade_date and t.trade_date != _recon_fmt]
-            dealer_trades = today if today else dp_result.trades
-            log_fn(f"Dealer: {len(dealer_trades)} trade(s) from {Path(dealer_path).name}")
+    try:
+        _recon_fmt = datetime.strptime(date_str, '%Y-%m-%d').strftime('%d/%m/%Y')
+    except ValueError:
+        _recon_fmt = date_str
+
+    if dealer_paths_eff:
+        if len(dealer_paths_eff) > 1:
+            log_fn(f"Dealer: combining {len(dealer_paths_eff)} grid file(s) — "
+                   + ', '.join(Path(p).name for p in dealer_paths_eff))
+        for _dp in dealer_paths_eff:
+            dp_result = DealerParser().parse_file(_dp)
+            if not dp_result.ok:
+                log_fn(f"Dealer parse error ({Path(_dp).name}): {dp_result.error}",
+                       'warning')
+                continue
+            today = [t for t in dp_result.trades
+                     if t.trade_date == _recon_fmt]
+            other = [t for t in dp_result.trades
+                     if t.trade_date and t.trade_date != _recon_fmt]
+            no_date = [t for t in dp_result.trades if not t.trade_date]
+
+            # When trade_date is parseable on every row, trust the
+            # filter — files that contain only historical trades
+            # (e.g. a "this week's executions" cumulative grid) get
+            # excluded for today's recon. Fall back to all rows ONLY
+            # when no_date trades exist (parser couldn't extract
+            # trade_date for some/all rows — without that signal we
+            # can't safely filter, and the operator can drop bad
+            # rows manually).
+            if today:
+                picked = today + no_date  # include any unkeyed rows alongside
+            elif other and not no_date:
+                # File has dates but none match today — historical
+                # file selected. Skip it loudly.
+                log_fn(f"Dealer: {Path(_dp).name} has 0 trade(s) for "
+                       f"{_recon_fmt} — skipping (file dates: "
+                       f"{sorted(set(t.trade_date for t in other))[:5]}"
+                       f"{'...' if len(set(t.trade_date for t in other)) > 5 else ''}). "
+                       f"If you intended to include it, check the file "
+                       f"selection or the dealer's date column.", 'warning')
+                continue
+            else:
+                # No today rows AND no datable rows — last-resort fallback.
+                picked = dp_result.trades
+                log_fn(f"Dealer: {Path(_dp).name} has no extractable "
+                       f"trade_date — loading all {len(picked)} row(s) "
+                       f"as today's. Verify the dates are correct.", 'warning')
+
+            dealer_trades.extend(picked)
+            log_fn(f"Dealer: {len(picked)} trade(s) from {Path(_dp).name}")
             if other:
                 log_fn(f"Dealer: excluded {len(other)} trade(s) from other dates "
-                       f"{sorted(set(t.trade_date for t in other))}", 'warning')
-        else:
-            log_fn(f"Dealer parse error: {dp_result.error}", 'warning')
+                       f"{sorted(set(t.trade_date for t in other))} "
+                       f"in {Path(_dp).name}", 'warning')
+        if len(dealer_paths_eff) > 1:
+            log_fn(f"Dealer: combined {len(dealer_trades)} trade(s) total "
+                   f"across {len(dealer_paths_eff)} grid(s)")
     else:
         if len(ws_orders) == 0:
             log_fn('No dealer file and no WS equity orders — confirmed no trades today')
@@ -647,7 +706,8 @@ def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
 
     # ── Write output files ────────────────────────────────────────────────── #
     Path(out_dir).mkdir(parents=True, exist_ok=True)
-    ts       = datetime.now().strftime('%H%M%S')
+    from core.timeutils import ist_now_str
+    ts       = ist_now_str('%H%M%S')
     date_fmt = date_str.replace('-', '')
 
     recon_path = os.path.join(out_dir, f'TradeRecon_{date_fmt}_{ts}.xlsx')

@@ -260,20 +260,37 @@ class TradeReconEngine:
                 _c = _canon_name(_n)
                 if _c:
                     self._brokers_by_name[_c] = b
-        # Index pool map by dealer_account
+        # Index pool map by dealer_account. Includes alias entries (e.g.
+        # the dealer file may carry "GoldStandard 57Forward Diversi"
+        # instead of the canonical "GSWP_57FORWARD") so dealer-side
+        # lookups stay tolerant of typos.
         self._pools = {
             p['dealer_account'].upper(): p
             for p in pool_map.get('pools', [])
         }
-        # Index pool map by mapin (for reverse lookup)
+        # Index pool map by mapin for WS-side and CN-side lookups.
+        # pool_map carries three flavours of entries per canonical
+        # mapin:
+        #   1. primary           — no canonical_mapin
+        #   2. dealer alias      — same mapin as primary, canonical_mapin
+        #                          set to the same value (a self-reference,
+        #                          since the alias is just an alt
+        #                          dealer_account spelling for the same
+        #                          pool — see pools_hub.pool_map_dict)
+        #   3. broker UCC alias  — unique alias mapin (e.g. G678, INST22455),
+        #                          canonical_mapin pointing to the parent
+        # We must drop flavour #2 from this index, otherwise the dict
+        # comprehension's last-write-wins leaves the alias entry's
+        # display-name dealer_account ("GoldStandard 57Forward Diversi")
+        # overwriting the canonical "GSWP_57FORWARD". Check 1 then
+        # builds a join key that no dealer row matches.
+        # Flavour #3 must remain — Check 2's CN-side resolution at
+        # _canonical_ucc uses it to walk a broker UCC back to its pool.
         self._mapin_to_pool = {
             p['mapin'].upper(): p
             for p in pool_map.get('pools', [])
+            if (p.get('canonical_mapin') or '').upper() != p['mapin'].upper()
         }
-        # Alias codes (e.g. GSWP012 Haitong → aristos_hdfc GWPJ0004) arrive
-        # already synthesized as separate pool_map entries via PoolsHub —
-        # see core/pools_hub.py:pool_map_dict(). So self._mapin_to_pool
-        # above already contains the alias → canonical routing.
         # Index pool map by pool_name (OrderLog POOLNAME column → dealer_account)
         # Normalised: lower-case, spaces collapsed for fuzzy tolerance
         self._pool_name_to_pool = {
@@ -517,16 +534,35 @@ class TradeReconEngine:
             ws_agg[key].total_qty += qty
             ws_agg[key].trans_ids.append(trans_id)
 
-        # Build dealer aggregation: (pool_account, isin, side) → total fill + avg px + limit
+        # Build dealer aggregation: (pool_account, isin, side) → totals.
+        # Price-breach check needs to be PER-ORDER — the dealer may have placed
+        # several orders on the same stock+pool at DIFFERENT limit prices.
+        # Aggregating and then comparing the WAP against any one of those limits
+        # produces false breaches (e.g. two Indraprastha buys at 405 and 408 —
+        # both fills within their own limit, but their WAP 405.09 > min(405,408)
+        # would look like a breach under the old aggregation).
+        # Fix: check each order against its own limit; flag aggregated row as
+        # breach only if ANY order truly breached. Display a volume-weighted
+        # limit for the limit column (more informative than "last seen").
         dealer_agg: Dict[Tuple, dict] = defaultdict(
-            lambda: {'fill_qty': 0.0, 'value': 0.0, 'lmt_px': 0.0}
+            lambda: {'fill_qty': 0.0, 'value': 0.0,
+                     'lmt_qty_weighted': 0.0, 'lmt_fill_qty': 0.0,
+                     'any_breach': False}
         )
         for dt in dealer_trades:
             key = (dt.account.upper(), dt.isin, dt.side.capitalize())
             dealer_agg[key]['fill_qty'] += dt.fill_qty
             dealer_agg[key]['value']    += dt.fill_qty * dt.avg_px
             if dt.lmt_px > 0:
-                dealer_agg[key]['lmt_px'] = dt.lmt_px
+                dealer_agg[key]['lmt_qty_weighted'] += dt.fill_qty * dt.lmt_px
+                dealer_agg[key]['lmt_fill_qty']    += dt.fill_qty
+                # Per-order breach — compare this order's avg_px to its own lmt_px
+                _side_cap = dt.side.capitalize()
+                if dt.avg_px > 0:
+                    if _side_cap == 'Buy'  and _round_price(dt.avg_px) > _round_price(dt.lmt_px):
+                        dealer_agg[key]['any_breach'] = True
+                    if _side_cap == 'Sell' and _round_price(dt.avg_px) < _round_price(dt.lmt_px):
+                        dealer_agg[key]['any_breach'] = True
 
         # Compare
         all_keys = set(ws_agg.keys()) | set(dealer_agg.keys())
@@ -542,22 +578,23 @@ class TradeReconEngine:
 
             fill_qty = deal['fill_qty'] if deal else 0.0
             avg_px   = round(deal['value'] / fill_qty, 4) if (deal and fill_qty > 0) else 0.0
-            # Use dealer's LmtPx (not WS TRAN_PRICE) for limit check
-            lmt_px   = deal['lmt_px'] if deal else 0.0
+            # Display a volume-weighted limit (matches how avg_px is weighted)
+            # so the Limit column remains meaningful when multiple orders at
+            # different limits are aggregated.
+            if deal and deal['lmt_fill_qty'] > 0:
+                lmt_px = round(deal['lmt_qty_weighted'] / deal['lmt_fill_qty'], 4)
+            else:
+                lmt_px = 0.0
             is_mkt   = (lmt_px == 0.0)
 
             qty_diff = round(ws_qty - fill_qty, 4)
 
-            # Price breach check — only when dealer placed a limit order.
-            # Compare 4dp-rounded values to avoid FP-artifact false breaches.
-            price_breach = False
-            if not is_mkt and lmt_px > 0 and avg_px > 0:
-                _avg = _round_price(avg_px)
-                _lmt = _round_price(lmt_px)
-                if side == 'Buy'  and _avg > _lmt:
-                    price_breach = True
-                if side == 'Sell' and _avg < _lmt:
-                    price_breach = True
+            # Price breach — already computed per-order during aggregation so
+            # multi-order aggregation with differing limits is handled
+            # correctly. True only if ANY individual order breached its own
+            # limit; false when each order was within its own limit even if
+            # the WAP happens to sit outside a neighbouring order's limit.
+            price_breach = bool(deal['any_breach']) if deal else False
 
             # Status
             if not deal:
@@ -617,7 +654,8 @@ class TradeReconEngine:
         1. Exact: (ucc, dealer_code, isin, side)
         2. UCC-fallback: (dealer_code, isin, side) — when PDF UCC is blank/wrong
         3. ISIN-fallback: (ucc, dealer_code, side) — when ISIN enrichment failed
-        4. Loose: (dealer_code, side) with qty check — last resort
+        4. Broker-blind: (canonical_mapin, isin, side) — when the dealer file's
+           Brkr Code is wrong (recorded the routed broker, not the executor)
         """
         results = []
 
@@ -625,6 +663,7 @@ class TradeReconEngine:
         cn_exact:     Dict[Tuple, List[ContractNote]] = defaultdict(list)  # (ucc, dealer, isin, side)
         cn_no_ucc:    Dict[Tuple, List[ContractNote]] = defaultdict(list)  # (dealer, isin, side)
         cn_no_isin:   Dict[Tuple, List[ContractNote]] = defaultdict(list)  # (ucc, dealer, side)
+        cn_pool_isin: Dict[Tuple, List[ContractNote]] = defaultdict(list)  # (canonical_mapin, isin, side)
 
         def _resolve_broker(cn) -> dict:
             # Some brokers (Emkay) print their dealer_code in the "SEBI Regn"
@@ -677,6 +716,17 @@ class TradeReconEngine:
                     cn_exact[(_pool_mapin, dealer_code, isin, side)].append(cn)
                     cn_no_isin[(_pool_mapin, dealer_code, side)     ].append(cn)
 
+                # Broker-blind index — keyed only on canonical pool + isin +
+                # side. Used by the Pass 4 fallback when the dealer file's
+                # Brkr Code disagrees with the CN's actual issuer (common
+                # when the dealer logs the routed broker but the order ends
+                # up filled by another). Use the canonical mapin so that
+                # alias UCCs (e.g. broker-specific codes) collapse to the
+                # same key as the pool mapin.
+                _canon_for_index = _pool_mapin or ucc
+                if _canon_for_index:
+                    cn_pool_isin[(_canon_for_index, isin, side)].append(cn)
+
         def _canonical_ucc(ucc: str) -> str:
             """Resolve a UCC/MAPIN to its canonical pool mapin."""
             entry = self._mapin_to_pool.get(ucc.upper(), {})
@@ -717,6 +767,22 @@ class TradeReconEngine:
                                for t in cn.trades)]
                 return best or cns
 
+            # 4. Broker-blind: pool + ISIN + side. Catches the case where
+            # the dealer file mislabels the broker — the CN exists in the
+            # parsed set but under a different broker code. Resolve dealer
+            # mapin to its canonical form so alias entries collapse, then
+            # look up by (canonical_mapin, isin, side) only.
+            canon_mapin = _canonical_ucc(ucc)
+            cns = cn_pool_isin.get((canon_mapin, isin, side), [])
+            if cns:
+                logger.info(
+                    f'C2 broker-blind match: dealer broker={dc!r} did NOT '
+                    f'match any CN, but pool {canon_mapin}/{isin}/{side} '
+                    f'has {len(cns)} CN(s) under different broker(s) '
+                    f'{sorted({c.broker_sebi for c in cns})!r}. '
+                    f'Falling back to broker-blind match.')
+                return cns
+
             return []
 
         # Aggregate dealer trades by (mapin, broker, isin, side) before matching.
@@ -750,8 +816,16 @@ class TradeReconEngine:
             side = dt.side.capitalize()
 
             # Zero-fill: order was placed but not executed — no CN expected.
-            # Skip entirely — nothing to reconcile against a contract note.
+            # Record as UNFILLED (not a break) and move on.
             if dt.fill_qty == 0:
+                results.append(Check2Result(
+                    mapin=dt.mapin, dealer_account=dt.account,
+                    broker_code=dt.brkr_code, isin=dt.isin,
+                    security_name=dt.name, side=side,
+                    dealer_fill_qty=0.0, dealer_avg_px=0.0,
+                    cn_qty=0.0, cn_wap=0.0, cn_no='',
+                    qty_match=True, price_match=True, status='UNFILLED',
+                ))
                 continue
 
             matching_cns = _find_cns(dt)
@@ -1021,11 +1095,6 @@ class TradeReconEngine:
         if isin_to_name is None:
             isin_to_name = {}
 
-        # If no NSDL records are available, skip C3 entirely rather than
-        # marking every CN trade as NSDL_MISSING.
-        if not nsdl_records:
-            return []
-
         # UNKNOWN dedup already applied before C2; re-run to catch any remaining
         contract_notes = self._dedup_unknown_cns(list(contract_notes))
         contract_notes = self._dedup_ecn_duplicates(contract_notes)
@@ -1178,13 +1247,25 @@ class TradeReconEngine:
 
                 display_name = _resolve_name(trade.isin, trade.security_name)
 
+                # Canonicalise the UCC so the column shows the pool's
+                # canonical MAPIN (e.g. GOLD57FRWD, GWPJ0004) rather than
+                # whatever broker-specific code the CN happens to print
+                # (G608 for Emkay, 24725 for ICICI Sec, etc.). After
+                # _mapin_to_pool's self-referential alias filter, the
+                # entry's canonical_mapin (when set) points to the parent
+                # pool's primary mapin; falling through to mapin gives
+                # the canonical when cn.ucc is already canonical.
+                _cn_pool = self._mapin_to_pool.get((cn.ucc or '').upper(), {})
+                _canon_ucc = (_cn_pool.get('canonical_mapin') or
+                              _cn_pool.get('mapin') or
+                              cn.ucc)
                 results.append(Check3Result(
                     cn_no=cn.cn_no,
                     isin=trade.isin,
                     security_name=display_name,
                     broker_sebi=cn.broker_sebi,
                     broker_name=cn.broker_name,
-                    ucc=cn.ucc,
+                    ucc=_canon_ucc,
                     qty=trade.qty,
                     net_rate=trade.wap,
                     in_broker_pdf=True,
@@ -1212,13 +1293,20 @@ class TradeReconEngine:
             # Use security master name if available; fall back to NSDL name
             _nr_display = (isin_to_name.get(nr.isin or '') or
                            nr.security_name or nr.isin or '')
+            # Canonicalise NSDL-side UCC the same way as the CN-side
+            # path above so PDF_MISSING rows display the same pool
+            # MAPIN as their MATCH counterparts.
+            _nr_pool = self._mapin_to_pool.get((nr.ucc or '').upper(), {})
+            _canon_nr_ucc = (_nr_pool.get('canonical_mapin') or
+                             _nr_pool.get('mapin') or
+                             nr.ucc)
             results.append(Check3Result(
                 cn_no=nr.ecn_no,
                 isin=nr.isin,
                 security_name=_nr_display,
                 broker_sebi=nr.broker_sebi,
                 broker_name=nr.broker_name,
-                ucc=nr.ucc,
+                ucc=_canon_nr_ucc,
                 qty=nr.qty,
                 net_rate=nr.net_rate,
                 in_broker_pdf=False,
@@ -1627,8 +1715,8 @@ class TradeReconEngine:
             e_sec = e.get('security', '') or d_sec
 
             qty_diff   = round(d_qty - e_qty, 4)
-            # price_diff computed from 4dp-rounded inputs; value used for
-            # display but zero-tolerance comparisons below treat it as exact.
+            # price_diff of 4dp-rounded values — still computed as float for
+            # display, but comparisons below use zero-tolerance equality.
             price_diff = _round_price(d_px - e_px)
 
             if   e_qty == 0:                                               status = 'CN_ONLY'
@@ -1840,6 +1928,12 @@ def write_0096_xlsx(rows: List[Output0096Row], out_path: str, date_str: str):
         return None
 
     for r_idx, row in enumerate(rows, 2):
+        # Data layout matches write_0096_excel exactly:
+        #  - Dummy (B)         → None (empty cell)
+        #  - ServiceTax (K)    → numeric 0
+        #  - StampDuty (U)     → None (empty cell)
+        # All dates written as real datetime objects → openpyxl stores them
+        # as Excel date serials internally, same as POI reads them.
         trans_date = _parse_date(row.transaction_date)
         settle_date = _parse_date(row.settlement_date)
         cash_settle = _parse_date(row.cash_settlement_date)
@@ -1866,6 +1960,7 @@ def write_0096_xlsx(rows: List[Output0096Row], out_path: str, date_str: str):
         ws.cell(r_idx, 20, cash_settle)                     # T CashsettlementDate
         ws.cell(r_idx, 21, None)                            # U StampDuty
 
+        # Apply date number format so Excel displays the dates correctly
         for col in (6, 7, 20):
             c = ws.cell(r_idx, col)
             if c.value is not None:
@@ -1922,8 +2017,7 @@ def write_trade_recon_report(summary: TradeReconSummary, out_path: str):
     # ── Summary sheet ─────────────────────────────────────────────────────
     ws_sum = wb.active; ws_sum.title = 'Summary'
     ws_sum.merge_cells('A1:F1')
-    from core.date_format import display_date as _disp_d
-    ws_sum['A1'] = f'Trade Reconciliation Report — {_disp_d(summary.date)}'
+    ws_sum['A1'] = f'Trade Reconciliation Report — {summary.date}'
     ws_sum['A1'].font = Font(bold=True, size=14, color='1B2A4A')
     ws_sum['A1'].alignment = Alignment(horizontal='center', vertical='center')
     ws_sum.row_dimensions[1].height = 28
@@ -1982,21 +2076,17 @@ def write_trade_recon_report(summary: TradeReconSummary, out_path: str):
     ])
 
     # ── Check 3 sheet ──────────────────────────────────────────────────────
-    if summary.check3_results:
-        ws3 = wb.create_sheet('C3 CN vs NSDL')
-        _hdr(ws3, ['CN No','ISIN','Security','Broker SEBI','Broker','UCC',
-                   'Qty','Rate','In PDF','In NSDL','NSDL Status','Status'],
-             [18,14,30,20,35,14,10,12,8,8,20,14])
-        _write_rows(ws3, [
-            ([r.cn_no, r.isin, r.security_name, r.broker_sebi, r.broker_name,
-              r.ucc, r.qty, r.net_rate,
-              'Y' if r.in_broker_pdf else 'N', 'Y' if r.in_nsdl else 'N',
-              r.nsdl_status, r.status], r.status)
-            for r in summary.check3_results
-        ])
-    else:
-        ws3 = wb.create_sheet('C3 Skipped')
-        ws3.append(['NSDL file not available for this date — C3 check skipped.'])
+    ws3 = wb.create_sheet('C3 CN vs NSDL')
+    _hdr(ws3, ['CN No','ISIN','Security','Broker SEBI','Broker','UCC',
+               'Qty','Rate','In PDF','In NSDL','NSDL Status','Status'],
+         [18,14,30,20,35,14,10,12,8,8,20,14])
+    _write_rows(ws3, [
+        ([r.cn_no, r.isin, r.security_name, r.broker_sebi, r.broker_name,
+          r.ucc, r.qty, r.net_rate,
+          'Y' if r.in_broker_pdf else 'N', 'Y' if r.in_nsdl else 'N',
+          r.nsdl_status, r.status], r.status)
+        for r in summary.check3_results
+    ])
 
     # ── Check 5 sheet (optional) ───────────────────────────────────────────
     if summary.check5_results:

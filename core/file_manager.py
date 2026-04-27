@@ -594,6 +594,72 @@ class FileManager:
                 return f
         return files[0]
 
+    def list_dealer_files(self, date_str: str) -> List[dict]:
+        """Return every dealer grid file present for date_str, with
+        metadata for the file-selector UI. Each entry::
+
+          {
+            'path':         absolute path,
+            'basename':     short filename,
+            'fetched_at':   'YYYYMMDDTHHMMSS' parsed from the ingestor's
+                            timestamp suffix (or '' if not present),
+            'row_count':    int — number of data rows (header excluded),
+                            or None if the file couldn't be read,
+            'is_latest':    bool, True for the most recently fetched
+                            file (used as the default selection),
+          }
+
+        Sorted by fetched_at descending (latest first). Empty list when
+        no grid files exist for the date.
+        """
+        import re as _re
+        files = self._files_for_date(date_str, 'dealer',
+                                      extensions=('.xlsx', '.xls', '.csv'))
+        # Restrict to grid_* files — Trade Allocation files etc. are
+        # excluded so the selector stays tight to the canonical grid.
+        grids = [f for f in files
+                 if Path(f).name.lower().startswith('grid')]
+        if not grids:
+            return []
+
+        _ts_rx = _re.compile(r'_(\d{8}T\d{6})')
+        out: list = []
+        for f in grids:
+            name = Path(f).name
+            m = _ts_rx.search(name)
+            ts = m.group(1) if m else ''
+            row_count = None
+            try:
+                if name.lower().endswith('.csv'):
+                    with open(f, 'r', encoding='utf-8', errors='replace') as fh:
+                        row_count = max(0, sum(1 for _ in fh) - 1)
+                elif name.lower().endswith('.xlsx'):
+                    import openpyxl as _ox
+                    wb = _ox.load_workbook(f, data_only=True, read_only=True)
+                    ws = wb[wb.sheetnames[0]]
+                    row_count = max(0, ws.max_row - 1)
+                    wb.close()
+                elif name.lower().endswith('.xls'):
+                    import xlrd as _xl
+                    book = _xl.open_workbook(f)
+                    s = book.sheets()[0]
+                    row_count = max(0, s.nrows - 1)
+            except Exception:
+                row_count = None
+            out.append({
+                'path':       str(f),
+                'basename':   name,
+                'fetched_at': ts,
+                'row_count':  row_count,
+                'is_latest':  False,
+            })
+
+        # Latest = most recent fetched_at (YYYYMMDDTHHMMSS sorts lex).
+        out.sort(key=lambda e: (e['fetched_at'], e['basename']), reverse=True)
+        if out:
+            out[0]['is_latest'] = True
+        return out
+
     def get_nsdl_file(self, date_str: str) -> Optional[str]:
         """Find the NSDL steady file.
 
@@ -664,10 +730,15 @@ class FileManager:
         _dealer_all = sorted([str(p) for p in _dd.iterdir()
                                if p.is_file() and p.suffix.lower() in ('.xlsx','.xls','.csv')]
                              ) if _dd.exists() else []
+        # Per-file metadata for the multi-grid selector (only meaningful
+        # when len(_dealer_all) > 1 — UI hides the picker for the
+        # single-file case).
+        dealer_list = self.list_dealer_files(date_str)
         return {
             'ws_trade_trans': {'present': bool(ws_tt),  'path': ws_tt  or '', 'label': 'Z13_OrderLog (WS Orders)'},
             'dealer_file':    {'present': bool(_dealer_all), 'path': dealer or '',
-                               'count': len(_dealer_all), 'paths': _dealer_all},
+                               'count': len(_dealer_all), 'paths': _dealer_all,
+                               'files': dealer_list},
             'nsdl_file':      {'present': bool(nsdl),  'path': nsdl  or ''},
             'security_master':{'present': bool(sec_m), 'path': sec_m or ''},
             'broker_cn_pdfs': {'present': bool(cn_pdfs), 'count': len(cn_pdfs),

@@ -1,6 +1,4 @@
 {
-  "_schema_version": "1.0",
-  "_comment": "Unified Pool Hub — single source of truth for all pool/custodian/bank mappings. Replaces pool_map.json, mappings.json, icici_bank_pool_map.json, kotak_bank_pool_map.json, hdfc_bank_pool_map.json.",
   "pools": [
     {
       "pool_id": "mysticv_icici",
@@ -17,8 +15,8 @@
       "pool_demat_account": "000405165525",
       "bank": "ICICI",
       "bank_account": "000405165525",
-      "broker_cn_aliases": [],
       "kotak_client_id": "",
+      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
@@ -36,14 +34,14 @@
       "pool_demat_account": "000405165526",
       "bank": "ICICI",
       "bank_account": "000405165526",
+      "kotak_client_id": "",
       "broker_cn_aliases": [
         {
           "mapin": "25281",
-          "source": "icici_backoffice",
-          "note": "ICICI back-office UCC for MYSTICM"
+          "note": "ICICI back-office UCC for MYSTICM",
+          "source": "icici_backoffice"
         }
       ],
-      "kotak_client_id": "",
       "ws_overrides": []
     },
     {
@@ -61,8 +59,8 @@
       "pool_demat_account": "6651091725",
       "bank": "KOTAK",
       "bank_account": "6651091725",
-      "broker_cn_aliases": [],
       "kotak_client_id": "9000032175",
+      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
@@ -80,14 +78,14 @@
       "pool_demat_account": "6651091756",
       "bank": "KOTAK",
       "bank_account": "6651091756",
+      "kotak_client_id": "9000032176",
       "broker_cn_aliases": [
         {
           "mapin": "24708",
-          "source": "icici_backoffice",
-          "note": "ICICI back-office UCC for Kotak WEMO pool (routes to 204496980)"
+          "note": "ICICI back-office UCC for Kotak WEMO pool (routes to 204496980)",
+          "source": "icici_backoffice"
         }
       ],
-      "kotak_client_id": "9000032176",
       "ws_overrides": []
     },
     {
@@ -105,24 +103,24 @@
       "pool_demat_account": "50200115218016",
       "bank": "HDFC",
       "bank_account": "50200115218016",
+      "kotak_client_id": "",
       "broker_cn_aliases": [
         {
           "mapin": "HDFC00001816",
-          "source": "motilal_custodian",
-          "note": "Motilal custodian code for Aristos"
+          "note": "Motilal custodian code for Aristos",
+          "source": "motilal_custodian"
         },
         {
           "mapin": "GSWP012",
-          "source": "haitong",
-          "note": "Haitong trading code for Aristos"
+          "note": "Haitong trading code for Aristos",
+          "source": "haitong"
         }
       ],
-      "kotak_client_id": "",
       "ws_overrides": [
         {
           "if_client_id": "GWPJ0016",
-          "then_ws_scheme_code": "GWPJ0016",
-          "note": "Client GWPJ0016 routes to their own scheme code, not GWPJ0004"
+          "note": "Client GWPJ0016 routes to their own scheme code, not GWPJ0004",
+          "then_ws_scheme_code": "GWPJ0016"
         }
       ]
     },
@@ -131,7 +129,6 @@
       "display_name": "Aristos Equity Portfolio NRO Mustafa",
       "active": true,
       "mapin": "GWPJ0016",
-      "_note": "NRO Mustafa — WS MAPIN is GWPJ0016 per Z13_PoolMaster",
       "ws_scheme_code": "GWPJ0016",
       "ws_scheme_names": [
         "aristos equity portfolio nro mustafa"
@@ -142,17 +139,14 @@
       "pool_demat_account": "50100865254360",
       "bank": "HDFC",
       "bank_account": "50100865254360",
-      "broker_cn_aliases": [],
       "kotak_client_id": "",
-      "ws_overrides": [],
-      "parent_pool_id": "aristos_hdfc",
-      "is_sub_account": true
+      "broker_cn_aliases": [],
+      "ws_overrides": []
     },
     {
       "pool_id": "aristos_nro_anshuman",
       "display_name": "Aristos Equity Portfolio NRO Anshuman",
       "active": false,
-      "_note": "No WS entry yet — set active:true when WS pool created",
       "mapin": "",
       "ws_scheme_code": "",
       "ws_scheme_names": [],
@@ -162,11 +156,9 @@
       "pool_demat_account": "50100864437761",
       "bank": "HDFC",
       "bank_account": "50100864437761",
-      "broker_cn_aliases": [],
       "kotak_client_id": "",
-      "ws_overrides": [],
-      "parent_pool_id": "aristos_hdfc",
-      "is_sub_account": true
+      "broker_cn_aliases": [],
+      "ws_overrides": []
     },
     {
       "pool_id": "eterna_axis",
@@ -183,27 +175,26 @@
       "pool_demat_account": "925020047846436",
       "bank": "AXIS",
       "bank_account": "925020047846436",
+      "kotak_client_id": "",
       "broker_cn_aliases": [
         {
           "mapin": "G587",
-          "source": "EMKY",
-          "note": ""
+          "note": "",
+          "source": "EMKY"
         },
         {
           "mapin": "GSWP011",
-          "source": "ESSI",
-          "note": "Haitong code for Eterna"
+          "note": "Haitong code for Eterna",
+          "source": "ESSI"
         }
       ],
-      "kotak_client_id": "",
       "ws_overrides": [
         {
           "if_client_id_prefix": "FOF",
-          "then_ws_scheme_code": "GOLDFOFPMS",
-          "note": "Axis GOLDETEPMS file sometimes includes FoF clients — route FOF* → GOLDFOFPMS"
+          "note": "Axis GOLDETEPMS file sometimes includes FoF clients \u2014 route FOF* \u2192 GOLDFOFPMS",
+          "then_ws_scheme_code": "GOLDFOFPMS"
         }
-      ],
-      "skip_pool_row_in_custodian": true
+      ]
     },
     {
       "pool_id": "fof_axis",
@@ -220,10 +211,9 @@
       "pool_demat_account": "925020038346493",
       "bank": "AXIS",
       "bank_account": "925020038346493",
-      "broker_cn_aliases": [],
       "kotak_client_id": "",
-      "ws_overrides": [],
-      "skip_pool_row_in_custodian": true
+      "broker_cn_aliases": [],
+      "ws_overrides": []
     },
     {
       "pool_id": "compass_icici",
@@ -234,32 +224,31 @@
       "ws_scheme_names": [
         "compass truenorth portfolio"
       ],
-      "dealer_account": "",
+      "dealer_account": "GSWP_COMPASS",
       "custodian_bank": "ICICI",
       "custodian_code": "GOLDCGT",
       "pool_demat_account": "000405164239",
       "bank": "ICICI",
       "bank_account": "000405164239",
-      "broker_cn_aliases": [],
       "kotak_client_id": "",
+      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
       "pool_id": "bjw_hdfc",
       "display_name": "GoldStandard BJW Portfolio",
       "active": false,
-      "_note": "Not live — no WS entry",
       "mapin": "GWPJ0018",
       "ws_scheme_code": "GWPJ0018",
       "ws_scheme_names": [],
-      "dealer_account": "",
+      "dealer_account": "GSWP_BJW",
       "custodian_bank": "HDFC",
       "custodian_code": "",
       "pool_demat_account": "50200119352349",
       "bank": "HDFC",
       "bank_account": "50200119352349",
-      "broker_cn_aliases": [],
       "kotak_client_id": "",
+      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
@@ -272,16 +261,210 @@
         "goldstandard wealth pvt ltd focusedalpha",
         "goldstandard focused alpha portfolio"
       ],
-      "dealer_account": "GSWP_FALPMS",
+      "dealer_account": "GSWP_FOCALPHA",
+      "dealer_account_aliases": [
+        "GSWP_FALPMS"
+      ],
       "custodian_bank": "AXIS",
       "custodian_code": "GOLDFALPMS",
-      "pool_demat_account": "",
+      "pool_demat_account": "926020006985432",
       "bank": "AXIS",
       "bank_account": "926020006985432",
-      "broker_cn_aliases": [],
       "kotak_client_id": "",
-      "ws_overrides": [],
-      "is_sub_account": false
+      "broker_cn_aliases": [],
+      "ws_overrides": []
+    },
+    {
+      "pool_id": "equicalm_axis",
+      "display_name": "Equicalm MFSIF Discretionary Portfolio",
+      "active": true,
+      "mapin": "GOLDEQUPMS",
+      "ws_scheme_code": "EQU0001",
+      "ws_scheme_names": [
+        "equicalm mfsif discretionary portfolio"
+      ],
+      "dealer_account": "GSWP_EQUICALM",
+      "custodian_bank": "AXIS",
+      "custodian_code": "GOLDEQUPMS",
+      "pool_demat_account": "926020007004679",
+      "bank": "AXIS",
+      "bank_account": "926020007004679",
+      "kotak_client_id": "",
+      "broker_cn_aliases": [],
+      "ws_overrides": []
+    },
+    {
+      "pool_id": "fwd57_axis",
+      "display_name": "GoldStandard 57Forward Diversified Momentum Portfolio",
+      "active": true,
+      "mapin": "GOLD57FRWD",
+      "ws_scheme_code": "GOLD57FRWD",
+      "ws_scheme_names": [
+        "goldstandard 57forward diversified momentum portfolio"
+      ],
+      "dealer_account": "GSWP_57FORWARD",
+      "dealer_account_aliases": [
+        "GoldStandard 57Forward Diversi"
+      ],
+      "custodian_bank": "AXIS",
+      "custodian_code": "GOLD57FRWD",
+      "pool_demat_account": "926020009534491",
+      "bank": "AXIS",
+      "bank_account": "926020009534491",
+      "kotak_client_id": "",
+      "broker_cn_aliases": [],
+      "ws_overrides": []
+    },
+    {
+      "pool_id": "allcap_axis",
+      "display_name": "GoldStandard AllCap Portfolio",
+      "active": true,
+      "mapin": "GOLDALLCAP",
+      "ws_scheme_code": "GOLDALLCAP",
+      "ws_scheme_names": [
+        "goldstandard allcap portfolio"
+      ],
+      "dealer_account": "GSWP_ALLCAP",
+      "custodian_bank": "AXIS",
+      "custodian_code": "GOLDALLCAP",
+      "pool_demat_account": "926020009549710",
+      "bank": "AXIS",
+      "bank_account": "926020009549710",
+      "kotak_client_id": "",
+      "broker_cn_aliases": [],
+      "ws_overrides": []
+    },
+    {
+      "pool_id": "cautilya_axis",
+      "display_name": "Cautilya Time Cycles Quant Portfolio",
+      "active": true,
+      "mapin": "GOLDCTCPMS",
+      "ws_scheme_code": "GOLDCTCPMS",
+      "ws_scheme_names": [
+        "cautilya time cycles quant portfolio"
+      ],
+      "dealer_account": "GSWP_CAUTILYA",
+      "custodian_bank": "AXIS",
+      "custodian_code": "GOLDCTCPMS",
+      "pool_demat_account": "926020004579486",
+      "bank": "AXIS",
+      "bank_account": "926020004579486",
+      "kotak_client_id": "",
+      "broker_cn_aliases": [],
+      "ws_overrides": []
+    },
+    {
+      "pool_id": "e50_axis",
+      "display_name": "GoldStandard E&R India 50 Portfolio",
+      "active": true,
+      "mapin": "GOLDE50PMS",
+      "ws_scheme_code": "GOLDE50PMS",
+      "ws_scheme_names": [
+        "goldstandard e&r india 50 portfolio"
+      ],
+      "dealer_account": "GSWP_ERINDIA50",
+      "custodian_bank": "AXIS",
+      "custodian_code": "GOLDE50PMS",
+      "pool_demat_account": "926020004744570",
+      "bank": "AXIS",
+      "bank_account": "926020004744570",
+      "kotak_client_id": "",
+      "broker_cn_aliases": [],
+      "ws_overrides": []
+    },
+    {
+      "pool_id": "ai_axis",
+      "display_name": "GoldStandard AI Portfolio",
+      "active": true,
+      "mapin": "GOLDSAIPMS",
+      "ws_scheme_code": "GOLDSAIPMS",
+      "ws_scheme_names": [
+        "goldstandard ai portfolio"
+      ],
+      "dealer_account": "GSWP_AIPORT",
+      "custodian_bank": "AXIS",
+      "custodian_code": "GOLDSAIPMS",
+      "pool_demat_account": "925020055970703",
+      "bank": "AXIS",
+      "bank_account": "925020055970703",
+      "kotak_client_id": "",
+      "broker_cn_aliases": [],
+      "ws_overrides": []
+    },
+    {
+      "pool_id": "ams_axis",
+      "display_name": "GoldStandard AMS Resilient Portfolio",
+      "active": true,
+      "mapin": "GOLDSAMPMS",
+      "ws_scheme_code": "GOLDSAMPMS",
+      "ws_scheme_names": [
+        "goldstandard ams resilient portfolio"
+      ],
+      "dealer_account": "GSWP_AMRPORT",
+      "custodian_bank": "AXIS",
+      "custodian_code": "GOLDSAMPMS",
+      "pool_demat_account": "925020055975740",
+      "bank": "AXIS",
+      "bank_account": "925020055975740",
+      "kotak_client_id": "",
+      "broker_cn_aliases": [],
+      "ws_overrides": []
+    },
+    {
+      "pool_id": "hxgon_icici",
+      "display_name": "Hxgon Partners Quality Opportunities Portfolio",
+      "active": true,
+      "mapin": "GSWHXOP",
+      "ws_scheme_code": "GSWHXOP",
+      "ws_scheme_names": [
+        "hxgon partners quality opportunities portfolio"
+      ],
+      "dealer_account": "GSWP_HXGON",
+      "custodian_bank": "ICICI",
+      "custodian_code": "GOLDHXOP",
+      "pool_demat_account": "000405165110",
+      "bank": "ICICI",
+      "bank_account": "000405165110",
+      "kotak_client_id": "",
+      "broker_cn_aliases": [],
+      "ws_overrides": []
+    },
+    {
+      "pool_id": "tyebjee_advisory",
+      "display_name": "Bashir Tyebjee",
+      "active": false,
+      "mapin": "Tyebjee",
+      "ws_scheme_code": "Tyebjee",
+      "ws_scheme_names": [
+        "bashir tyebjee"
+      ],
+      "dealer_account": "",
+      "custodian_bank": "",
+      "custodian_code": "",
+      "pool_demat_account": "",
+      "bank": "",
+      "bank_account": "",
+      "kotak_client_id": "",
+      "broker_cn_aliases": [],
+      "ws_overrides": []
+    }
+  ],
+  "investment_approaches": [
+    {
+      "ia_code": "GOLDKTSPMS",
+      "ia_name": "Keystone Test Portfolio",
+      "ia_no": 22,
+      "fund_manager": "Nirman Vithlani",
+      "strategy": "Equity"
+    }
+  ],
+  "schemes": [
+    {
+      "scheme_name": "Keystone Test Portfolio",
+      "ia_code": "GOLDKTSPMS",
+      "start_date": "23/04/2026",
+      "fund_manager": "Nirman Vithlani",
+      "strategy": "EQUITY"
     }
   ]
 }

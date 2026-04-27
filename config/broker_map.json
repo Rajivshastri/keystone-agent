@@ -1,15 +1,15 @@
 {
   "brokers": [
     {
-      "active": true,
-      "brokerage_rate": 0.001,
-      "dealer_code": "EQRS",
-      "email_domain": "",
       "name": "Equirus Securities Private Limited",
       "sebi_code": "INZ000251536",
-      "sebi_reg_no": "INZ000251536",
+      "dealer_code": "EQRS",
       "sender_email": "backoffice@equirus.com",
+      "email_domain": "",
       "subject_keyword": "Trade Confirmation",
+      "brokerage_rate": 0.001,
+      "active": true,
+      "sebi_reg_no": "INZ000251536",
       "pool_aliases": [
         {
           "pool_id": "compass_icici",
@@ -19,37 +19,77 @@
         {
           "pool_id": "mysticv_kotak",
           "alias_code": "G659",
-          "note": "Equirus UCC for Mystic Value Kotak"
+          "note": "Equirus UCC for Mystic Wealth Value Kotak"
         },
         {
           "pool_id": "mysticm_kotak",
           "alias_code": "G660",
-          "note": "Equirus UCC for Mystic Momentum Kotak"
+          "note": "Equirus UCC for Mystic Wealth Momentum Kotak"
         },
         {
           "pool_id": "eterna_axis",
           "alias_code": "G661",
-          "note": "Equirus UCC for Eterna Wealth Core"
+          "note": "Equirus UCC for Eterna WCORE"
         },
         {
           "pool_id": "aristos_hdfc",
           "alias_code": "G662",
-          "note": "Equirus UCC for Aristos"
+          "note": "Equirus UCC for Aristos EQTY Strategy"
+        },
+        {
+          "pool_id": "ams_axis",
+          "alias_code": "G665",
+          "note": "Equirus UCC for AMS Portfolio"
+        },
+        {
+          "pool_id": "ai_axis",
+          "alias_code": "G666",
+          "note": "Equirus UCC for AI Portfolio"
+        },
+        {
+          "pool_id": "hxgon_icici",
+          "alias_code": "G669",
+          "note": "Equirus UCC for Hxgon Quality Opportunities"
+        },
+        {
+          "pool_id": "cautilya_axis",
+          "alias_code": "G671",
+          "note": "Equirus UCC for Cautilya TC"
+        },
+        {
+          "pool_id": "e50_axis",
+          "alias_code": "G672",
+          "note": "Equirus UCC for ER INDIA50"
         },
         {
           "pool_id": "mysticv_icici",
           "alias_code": "G673",
-          "note": "Equirus UCC for Mystic Value ICICI"
+          "note": "Equirus UCC for Mystic Wealth Value ICICI"
         },
         {
           "pool_id": "mysticm_icici",
           "alias_code": "G674",
-          "note": "Equirus UCC for Mystic Momentum ICICI"
+          "note": "Equirus UCC for Mystic Wealth Momentum ICICI"
+        },
+        {
+          "pool_id": "equicalm_axis",
+          "alias_code": "G675",
+          "note": "Equirus UCC for Equicalm"
         },
         {
           "pool_id": "goldfalpms_axis",
           "alias_code": "G676",
           "note": "Equirus UCC for Focused Alpha"
+        },
+        {
+          "pool_id": "allcap_axis",
+          "alias_code": "G677",
+          "note": "Equirus UCC for AllCap"
+        },
+        {
+          "pool_id": "fwd57_axis",
+          "alias_code": "G678",
+          "note": "Equirus UCC for 57Forward"
         },
         {
           "pool_id": "bjw_hdfc",
@@ -59,423 +99,872 @@
       ]
     },
     {
-      "active": true,
-      "brokerage_rate": 0.001,
-      "dealer_code": "IFIN",
-      "email_domain": "iiflcap.com",
       "name": "IIFL Capital Services Ltd",
       "sebi_code": "IIFLSEC",
-      "sebi_reg_no": "INZ000164132",
+      "dealer_code": "IFIN",
       "sender_email": "",
+      "email_domain": "iiflcap.com",
       "subject_keyword": "India Trade Confirms",
+      "brokerage_rate": 0.001,
+      "active": true,
+      "sebi_reg_no": "INZ000164132",
       "pool_aliases": [
         {
           "pool_id": "compass_icici",
           "alias_code": "INST21740",
-          "note": "IIFL UCC for Compass TrueNorth"
+          "note": "IIFL Client ID for Compass TrueNorth"
         },
         {
           "pool_id": "mysticv_kotak",
           "alias_code": "INST21835",
-          "note": "IIFL UCC for Mystic Value Kotak"
+          "note": "IIFL Client ID for Mystic Wealth Value Kotak"
         },
         {
           "pool_id": "mysticm_kotak",
           "alias_code": "INST21836",
-          "note": "IIFL UCC for Mystic Momentum Kotak"
+          "note": "IIFL Client ID for Mystic Wealth Momentum Kotak"
         },
         {
           "pool_id": "eterna_axis",
           "alias_code": "INST21843",
-          "note": "IIFL UCC for Eterna Wealth Core"
+          "note": "IIFL Client ID for Eterna WCORE"
         },
         {
           "pool_id": "aristos_hdfc",
           "alias_code": "INST21860",
-          "note": "IIFL UCC for Aristos"
+          "note": "IIFL Client ID for Aristos EQ"
+        },
+        {
+          "pool_id": "ams_axis",
+          "alias_code": "INST22034",
+          "note": "IIFL Client ID for AMS Portfolio"
+        },
+        {
+          "pool_id": "ai_axis",
+          "alias_code": "INST22035",
+          "note": "IIFL Client ID for AI Portfolio"
+        },
+        {
+          "pool_id": "fof_axis",
+          "alias_code": "INST22037",
+          "note": "IIFL Client ID for Flexicap FoF"
+        },
+        {
+          "pool_id": "hxgon_icici",
+          "alias_code": "INST22038",
+          "note": "IIFL Client ID for Hxgon Quality Opportunities"
+        },
+        {
+          "pool_id": "e50_axis",
+          "alias_code": "INST22263",
+          "note": "IIFL Client ID for ER INDIA50"
+        },
+        {
+          "pool_id": "cautilya_axis",
+          "alias_code": "INST22264",
+          "note": "IIFL Client ID for Cautilya TC"
         },
         {
           "pool_id": "mysticv_icici",
           "alias_code": "INST22265",
-          "note": "IIFL UCC for Mystic Value ICICI"
+          "note": "IIFL Client ID for Mystic Wealth Value ICICI"
         },
         {
           "pool_id": "mysticm_icici",
           "alias_code": "INST22266",
-          "note": "IIFL UCC for Mystic Momentum ICICI"
+          "note": "IIFL Client ID for Mystic Wealth Momentum ICICI"
+        },
+        {
+          "pool_id": "equicalm_axis",
+          "alias_code": "INST22309",
+          "note": "IIFL Client ID for Equicalm"
         },
         {
           "pool_id": "goldfalpms_axis",
           "alias_code": "INST22310",
-          "note": "IIFL UCC for Focused Alpha (listed as 'ALPHA')"
+          "note": "IIFL Client ID for Focused Alpha"
+        },
+        {
+          "pool_id": "fwd57_axis",
+          "alias_code": "INST22455",
+          "note": "IIFL Client ID for 57Forward"
+        },
+        {
+          "pool_id": "allcap_axis",
+          "alias_code": "INST22456",
+          "note": "IIFL Client ID for AllCap"
         },
         {
           "pool_id": "bjw_hdfc",
           "alias_code": "INST22462",
-          "note": "IIFL UCC for BJW"
+          "note": "IIFL Client ID for BJW"
         }
       ]
     },
     {
-      "active": true,
-      "brokerage_rate": 0.001,
-      "dealer_code": "DAKI",
-      "email_domain": "",
       "name": "Dhanki Securities Pvt. Ltd.",
       "sebi_code": "DHANKI",
-      "sebi_reg_no": "INZ000237338",
+      "dealer_code": "DAKI",
       "sender_email": "info@dhankisecurities.com",
-      "subject_keyword": ""
-    },
-    {
-      "active": true,
-      "brokerage_rate": 0.001,
-      "dealer_code": "ICFX",
       "email_domain": "",
-      "name": "ICICI Securities Ltd",
-      "sebi_code": "ICICI SECURITIES LTD",
-      "sebi_reg_no": "INZ000183631",
-      "sender_email": "equity.settlements@icicisecurities.com",
       "subject_keyword": "",
+      "brokerage_rate": 0.001,
+      "active": true,
+      "sebi_reg_no": "INZ000237338",
       "pool_aliases": [
         {
+          "pool_id": "aristos_hdfc",
+          "alias_code": "16842",
+          "note": "Dhanki UCC for ARISTOS EQUITY PORTFOLIO"
+        },
+        {
+          "pool_id": "compass_icici",
+          "alias_code": "16843",
+          "note": "Dhanki UCC for COMPASS TRUENORTH"
+        },
+        {
+          "pool_id": "eterna_axis",
+          "alias_code": "16844",
+          "note": "Dhanki UCC for ETERNA WCORE"
+        },
+        {
+          "pool_id": "mysticv_kotak",
+          "alias_code": "16847",
+          "note": "Dhanki UCC for MYSTIC WEALTH VALUE PORTFOLIO"
+        },
+        {
+          "pool_id": "mysticm_kotak",
+          "alias_code": "16848",
+          "note": "Dhanki UCC for MYSTIC WEALTH MOMENTUM PORTFOLIO"
+        },
+        {
+          "pool_id": "ams_axis",
+          "alias_code": "16872",
+          "note": "Dhanki UCC for AMS PORTFOLIO"
+        },
+        {
+          "pool_id": "ai_axis",
+          "alias_code": "16873",
+          "note": "Dhanki UCC for AI PORTFOLIO"
+        },
+        {
+          "pool_id": "fof_axis",
+          "alias_code": "16875",
+          "note": "Dhanki UCC for FLEXICAP FOF"
+        },
+        {
+          "pool_id": "hxgon_icici",
+          "alias_code": "16876",
+          "note": "Dhanki UCC for HXGOAN QLTYOP"
+        },
+        {
+          "pool_id": "mysticv_icici",
+          "alias_code": "16904",
+          "note": "Dhanki UCC for MYSTIC WEALTH VALUE PORTFOLIO"
+        },
+        {
           "pool_id": "mysticm_icici",
-          "alias_code": "25281",
-          "note": "ICICI back-office UCC for MYSTICM"
+          "alias_code": "16905",
+          "note": "Dhanki UCC for MYSTIC WEALTH MOMENTUM PORTFOLIO"
+        },
+        {
+          "pool_id": "e50_axis",
+          "alias_code": "16906",
+          "note": "Dhanki UCC for ER INDIA50"
+        },
+        {
+          "pool_id": "cautilya_axis",
+          "alias_code": "16907",
+          "note": "Dhanki UCC for CAUTILYA TC"
+        },
+        {
+          "pool_id": "equicalm_axis",
+          "alias_code": "16914",
+          "note": "Dhanki UCC for EQUICALM"
+        },
+        {
+          "pool_id": "goldfalpms_axis",
+          "alias_code": "16915",
+          "note": "Dhanki UCC for FOCUSED ALPHA"
+        },
+        {
+          "pool_id": "fwd57_axis",
+          "alias_code": "16944",
+          "note": "Dhanki UCC for 57FORWARD"
+        },
+        {
+          "pool_id": "allcap_axis",
+          "alias_code": "16945",
+          "note": "Dhanki UCC for ALLCAP"
+        },
+        {
+          "pool_id": "bjw_hdfc",
+          "alias_code": "16946",
+          "note": "Dhanki UCC for BJW PORTFOLIO"
+        }
+      ]
+    },
+    {
+      "name": "ICICI Securities Ltd",
+      "sebi_code": "ICICI SECURITIES LTD",
+      "dealer_code": "ICFX",
+      "sender_email": "equity.settlements@icicisecurities.com",
+      "email_domain": "",
+      "subject_keyword": "",
+      "brokerage_rate": 0.001,
+      "active": true,
+      "sebi_reg_no": "INZ000183631",
+      "pool_aliases": [
+        {
+          "pool_id": "compass_icici",
+          "alias_code": "24559",
+          "note": "ICICI Sec back-office UCC for Compass TrueNorth"
         },
         {
           "pool_id": "mysticm_kotak",
           "alias_code": "24708",
-          "note": "ICICI back-office UCC for Kotak WEMO pool (routes to 204496980)"
-        },
-        {
-          "pool_id": "compass_icici",
-          "alias_code": "24559",
-          "note": "ICICI back-office UCC for Compass TrueNorth"
+          "note": "ICICI Sec back-office UCC for Mystic Wealth Momentum Kotak"
         },
         {
           "pool_id": "mysticv_kotak",
           "alias_code": "24709",
-          "note": "ICICI back-office UCC for Mystic Value Kotak"
+          "note": "ICICI Sec back-office UCC for Mystic Wealth Value Kotak"
         },
         {
           "pool_id": "eterna_axis",
           "alias_code": "24712",
-          "note": "ICICI back-office UCC for Eterna Wealth Core"
+          "note": "ICICI Sec back-office UCC for Eterna Wealth Core"
         },
         {
           "pool_id": "aristos_hdfc",
           "alias_code": "24725",
-          "note": "ICICI back-office UCC for Aristos"
+          "note": "ICICI Sec back-office UCC for Aristos Equity"
+        },
+        {
+          "pool_id": "hxgon_icici",
+          "alias_code": "25050",
+          "note": "ICICI Sec back-office UCC for Hxgon Quality Opportunities"
+        },
+        {
+          "pool_id": "ai_axis",
+          "alias_code": "25052",
+          "note": "ICICI Sec back-office UCC for AI Portfolio"
+        },
+        {
+          "pool_id": "ams_axis",
+          "alias_code": "25053",
+          "note": "ICICI Sec back-office UCC for AMS Portfolio"
+        },
+        {
+          "pool_id": "e50_axis",
+          "alias_code": "25279",
+          "note": "ICICI Sec back-office UCC for ER INDIA50"
+        },
+        {
+          "pool_id": "cautilya_axis",
+          "alias_code": "25280",
+          "note": "ICICI Sec back-office UCC for Cautilya TC"
+        },
+        {
+          "pool_id": "mysticm_icici",
+          "alias_code": "25281",
+          "note": "ICICI Sec back-office UCC for Mystic Wealth Momentum ICICI"
         },
         {
           "pool_id": "mysticv_icici",
           "alias_code": "25282",
-          "note": "ICICI back-office UCC for Mystic Value"
+          "note": "ICICI Sec back-office UCC for Mystic Wealth Value ICICI"
+        },
+        {
+          "pool_id": "equicalm_axis",
+          "alias_code": "25363",
+          "note": "ICICI Sec back-office UCC for Equicalm"
         },
         {
           "pool_id": "goldfalpms_axis",
           "alias_code": "25364",
-          "note": "ICICI back-office UCC for Focused Alpha"
+          "note": "ICICI Sec back-office UCC for Focused Alpha"
+        },
+        {
+          "pool_id": "fwd57_axis",
+          "alias_code": "25513",
+          "note": "ICICI Sec back-office UCC for 57Forward"
         },
         {
           "pool_id": "bjw_hdfc",
           "alias_code": "25514",
-          "note": "ICICI back-office UCC for BJW"
+          "note": "ICICI Sec back-office UCC for BJW"
+        },
+        {
+          "pool_id": "allcap_axis",
+          "alias_code": "25515",
+          "note": "ICICI Sec back-office UCC for AllCap"
         }
       ]
     },
     {
-      "active": true,
-      "brokerage_rate": 0.001,
-      "dealer_code": "MOTI",
-      "email_domain": "",
       "name": "Motilal Oswal Financial Services Ltd",
       "sebi_code": "MOTILAL",
-      "sebi_reg_no": "INZ000158836",
+      "dealer_code": "MOTI",
       "sender_email": "instops@motilaloswal.com",
+      "email_domain": "",
       "subject_keyword": "",
+      "brokerage_rate": 0.001,
+      "active": true,
+      "sebi_reg_no": "INZ000158836",
       "pool_aliases": [
-        {
-          "pool_id": "aristos_hdfc",
-          "alias_code": "HDFC00001816",
-          "note": "Motilal custodian code for Aristos"
-        },
         {
           "pool_id": "compass_icici",
           "alias_code": "Z20650",
-          "note": "Motilal UCC for Compass TrueNorth"
+          "note": "Motilal ClientCode for Compass TrueNorth"
         },
         {
           "pool_id": "mysticm_kotak",
           "alias_code": "Z20766",
-          "note": "Motilal UCC for Mystic Momentum Kotak"
+          "note": "Motilal ClientCode for Mystic Wealth Momentum Kotak"
         },
         {
           "pool_id": "mysticm_icici",
           "alias_code": "Z21420",
-          "note": "Motilal UCC for Mystic Momentum ICICI"
+          "note": "Motilal ClientCode for Mystic Wealth Momentum ICICI"
         },
         {
           "pool_id": "mysticv_kotak",
           "alias_code": "Z20767",
-          "note": "Motilal UCC for Mystic Value Kotak"
+          "note": "Motilal ClientCode for Mystic Wealth Value Kotak"
         },
         {
           "pool_id": "mysticv_icici",
           "alias_code": "Z21419",
-          "note": "Motilal UCC for Mystic Value ICICI"
+          "note": "Motilal ClientCode for Mystic Wealth Value ICICI"
         },
         {
           "pool_id": "aristos_hdfc",
           "alias_code": "Z20782",
-          "note": "Motilal UCC for Aristos"
+          "note": "Motilal ClientCode for Aristos EQ"
         },
         {
           "pool_id": "eterna_axis",
           "alias_code": "Z20824",
-          "note": "Motilal UCC for Eterna"
+          "note": "Motilal ClientCode for Eterna WCORE"
+        },
+        {
+          "pool_id": "cautilya_axis",
+          "alias_code": "Z21418",
+          "note": "Motilal ClientCode for Cautilya TC"
+        },
+        {
+          "pool_id": "e50_axis",
+          "alias_code": "Z21417",
+          "note": "Motilal ClientCode for ER INDIA50"
+        },
+        {
+          "pool_id": "hxgon_icici",
+          "alias_code": "Z21187",
+          "note": "Motilal ClientCode for Hxgon Quality Opportunities"
+        },
+        {
+          "pool_id": "fof_axis",
+          "alias_code": "Z21188",
+          "note": "Motilal ClientCode for Flexicap FoF"
+        },
+        {
+          "pool_id": "ams_axis",
+          "alias_code": "Z21191",
+          "note": "Motilal ClientCode for AMS Portfolio"
+        },
+        {
+          "pool_id": "ai_axis",
+          "alias_code": "Z21192",
+          "note": "Motilal ClientCode for AI Portfolio"
+        },
+        {
+          "pool_id": "equicalm_axis",
+          "alias_code": "Z21500",
+          "note": "Motilal ClientCode for Equicalm"
         },
         {
           "pool_id": "goldfalpms_axis",
           "alias_code": "Z21501",
-          "note": "Motilal UCC for Focused Alpha"
+          "note": "Motilal ClientCode for Focused Alpha"
         }
       ]
     },
     {
-      "active": true,
-      "brokerage_rate": 0.001,
-      "dealer_code": "KOTK",
-      "email_domain": "",
       "name": "Kotak Securities Limited",
       "sebi_code": "KOTAK",
-      "sebi_reg_no": "INZ000200137",
+      "dealer_code": "KOTK",
       "sender_email": "inst.cash@kotak.com",
+      "email_domain": "",
       "subject_keyword": "",
+      "brokerage_rate": 0.001,
+      "active": true,
+      "sebi_reg_no": "INZ000200137",
       "pool_aliases": [
         {
           "pool_id": "bjw_hdfc",
           "alias_code": "10243",
-          "note": "Kotak Securities UCC for BJW"
+          "note": "Kotak Sec Client Code for BJW"
+        },
+        {
+          "pool_id": "allcap_axis",
+          "alias_code": "1023M",
+          "note": "Kotak Sec Client Code for AllCap"
+        },
+        {
+          "pool_id": "fwd57_axis",
+          "alias_code": "1023N",
+          "note": "Kotak Sec Client Code for 57Forward"
+        },
+        {
+          "pool_id": "equicalm_axis",
+          "alias_code": "1020Z",
+          "note": "Kotak Sec Client Code for Equicalm"
         },
         {
           "pool_id": "goldfalpms_axis",
           "alias_code": "10210",
-          "note": "Kotak Securities UCC for Focused Alpha"
+          "note": "Kotak Sec Client Code for Focused Alpha"
         },
         {
           "pool_id": "mysticv_icici",
           "alias_code": "101ZV",
-          "note": "Kotak Securities UCC for Mystic Value ICICI"
+          "note": "Kotak Sec Client Code for Mystic Wealth Value (ICICI)"
+        },
+        {
+          "pool_id": "cautilya_axis",
+          "alias_code": "101ZT",
+          "note": "Kotak Sec Client Code for Cautilya TC"
+        },
+        {
+          "pool_id": "e50_axis",
+          "alias_code": "101ZU",
+          "note": "Kotak Sec Client Code for ER INDIA50"
         },
         {
           "pool_id": "mysticm_icici",
           "alias_code": "101ZW",
-          "note": "Kotak Securities UCC for Mystic Momentum ICICI"
+          "note": "Kotak Sec Client Code for Mystic Wealth Momentum (ICICI)"
+        },
+        {
+          "pool_id": "ams_axis",
+          "alias_code": "101UH",
+          "note": "Kotak Sec Client Code for AMS Portfolio"
+        },
+        {
+          "pool_id": "ai_axis",
+          "alias_code": "101UI",
+          "note": "Kotak Sec Client Code for AI Portfolio"
+        },
+        {
+          "pool_id": "hxgon_icici",
+          "alias_code": "101UL",
+          "note": "Kotak Sec Client Code for Hxgon Quality Opportunities"
         },
         {
           "pool_id": "aristos_hdfc",
           "alias_code": "101QN",
-          "note": "Kotak Securities UCC for Aristos"
+          "note": "Kotak Sec Client Code for Aristos EQTY"
         },
         {
           "pool_id": "eterna_axis",
           "alias_code": "101QF",
-          "note": "Kotak Securities UCC for Eterna"
+          "note": "Kotak Sec Client Code for Eterna WCORE"
         },
         {
           "pool_id": "mysticm_kotak",
           "alias_code": "101QD",
-          "note": "Kotak Securities UCC for Mystic Momentum Kotak"
+          "note": "Kotak Sec Client Code for Mystic Wealth Momentum Kotak"
         },
         {
           "pool_id": "mysticv_kotak",
           "alias_code": "101QE",
-          "note": "Kotak Securities UCC for Mystic Value Kotak"
+          "note": "Kotak Sec Client Code for Mystic Wealth Value Kotak"
         },
         {
           "pool_id": "compass_icici",
           "alias_code": "101MI",
-          "note": "Kotak Securities UCC for Compass TrueNorth"
+          "note": "Kotak Sec Client Code for Compass TrueNorth"
         }
       ]
     },
     {
-      "active": true,
-      "brokerage_rate": 0.001,
-      "dealer_code": "EDEL",
-      "email_domain": "",
       "name": "Nuvama Wealth Management Limited",
       "sebi_code": "NWML",
-      "sebi_reg_no": "INZ000166136",
+      "dealer_code": "EDEL",
       "sender_email": "InstOps@nuvama.com",
-      "subject_keyword": "GOLDSTANDARD EOD CASH FILE"
+      "email_domain": "",
+      "subject_keyword": "GOLDSTANDARD EOD CASH FILE",
+      "brokerage_rate": 0.001,
+      "active": true,
+      "sebi_reg_no": "INZ000166136",
+      "pool_aliases": [
+        {
+          "pool_id": "compass_icici",
+          "alias_code": "50290",
+          "note": "Nuvama UCC for COMPASS TRUENORTH PORTFOLIO"
+        },
+        {
+          "pool_id": "mysticm_kotak",
+          "alias_code": "50328",
+          "note": "Nuvama UCC for MYSTIC WEALTH MOMENTUM PORTFOLIO KOTAK"
+        },
+        {
+          "pool_id": "mysticv_kotak",
+          "alias_code": "50329",
+          "note": "Nuvama UCC for MYSTIC WEALTH VALUE PORTFOLIO KOTAK"
+        },
+        {
+          "pool_id": "eterna_axis",
+          "alias_code": "50330",
+          "note": "Nuvama UCC for ETERNA WEALTH CORE PORTFOLIO"
+        },
+        {
+          "pool_id": "aristos_hdfc",
+          "alias_code": "50333",
+          "note": "Nuvama UCC for ARISTOS EQUITY PORTFOLIO"
+        },
+        {
+          "pool_id": "ams_axis",
+          "alias_code": "53486",
+          "note": "Nuvama UCC for AMS PORTFOLIO"
+        },
+        {
+          "pool_id": "ai_axis",
+          "alias_code": "53487",
+          "note": "Nuvama UCC for AI PORTFOLIO"
+        },
+        {
+          "pool_id": "fof_axis",
+          "alias_code": "53489",
+          "note": "Nuvama UCC for FLEXICAP FOF"
+        },
+        {
+          "pool_id": "hxgon_icici",
+          "alias_code": "53490",
+          "note": "Nuvama UCC for HXGOAN QLTYOP"
+        },
+        {
+          "pool_id": "cautilya_axis",
+          "alias_code": "53800",
+          "note": "Nuvama UCC for CAUTILYA TC - AXIS CUSTODY"
+        },
+        {
+          "pool_id": "e50_axis",
+          "alias_code": "53801",
+          "note": "Nuvama UCC for ER INDIA50 - AXIS CUSTODY"
+        },
+        {
+          "pool_id": "mysticm_icici",
+          "alias_code": "53802",
+          "note": "Nuvama UCC for MYSTIC WEALTH MOMENTUM PORTFOLIO ICICI"
+        },
+        {
+          "pool_id": "mysticv_icici",
+          "alias_code": "53803",
+          "note": "Nuvama UCC for MYSTIC WEALTH VALUE PORTFOLIO ICICI"
+        },
+        {
+          "pool_id": "equicalm_axis",
+          "alias_code": "53841",
+          "note": "Nuvama UCC for EQUICALM - AXIS CUSTODY"
+        },
+        {
+          "pool_id": "goldfalpms_axis",
+          "alias_code": "53842",
+          "note": "Nuvama UCC for FOCUSED ALPHA - AXIS CUSTODY"
+        },
+        {
+          "pool_id": "fwd57_axis",
+          "alias_code": "53880",
+          "note": "Nuvama UCC for 57FORWARD"
+        },
+        {
+          "pool_id": "allcap_axis",
+          "alias_code": "53881",
+          "note": "Nuvama UCC for ALLCAP"
+        },
+        {
+          "pool_id": "bjw_hdfc",
+          "alias_code": "53888",
+          "note": "Nuvama UCC for BJW"
+        }
+      ]
     },
     {
-      "active": true,
-      "brokerage_rate": 0.001,
-      "dealer_code": "EMKY",
-      "email_domain": "",
       "name": "Emkay Global Financial Services Limited",
       "sebi_code": "EMKAY",
-      "sebi_reg_no": "INB010804030",
+      "dealer_code": "EMKY",
       "sender_email": "inst@emkayglobal.com",
+      "email_domain": "",
       "subject_keyword": "",
+      "brokerage_rate": 0.001,
+      "active": true,
+      "sebi_reg_no": "INZ000203933",
       "pool_aliases": [
         {
           "pool_id": "mysticm_kotak",
           "alias_code": "G585",
-          "note": "Emkay UCC for Mystic Momentum Kotak"
+          "note": "Emkay UCC for GOLDSTANDARD WEALTH A/C MYSTIC WEMO"
+        },
+        {
+          "pool_id": "mysticv_kotak",
+          "alias_code": "G586",
+          "note": "Emkay UCC for GOLDSTANDARD WEALTH A/C MYSTIC WEVA"
         },
         {
           "pool_id": "eterna_axis",
           "alias_code": "G587",
-          "note": "Emkay UCC for Eterna Wealth Core"
+          "note": "Emkay UCC for GOLDSTANDARD WEALTH A/C ETERNA WCORE"
         },
         {
           "pool_id": "aristos_hdfc",
           "alias_code": "G588",
-          "note": "Emkay UCC for Aristos"
+          "note": "Emkay UCC for GOLDSTANDARD WEALTH A/C ARISTOS EQTY"
+        },
+        {
+          "pool_id": "compass_icici",
+          "alias_code": "G591",
+          "note": "Emkay UCC for GOLDSTANDARD WEALTH A/C COMPASS TRUENORTH"
+        },
+        {
+          "pool_id": "ams_axis",
+          "alias_code": "G593",
+          "note": "Emkay UCC for GOLDSTANDARD WEALTH A/C AMS PORTFOLIO"
+        },
+        {
+          "pool_id": "ai_axis",
+          "alias_code": "G594",
+          "note": "Emkay UCC for GOLDSTANDARD WEALTH A/C AI PORTFOLIO"
+        },
+        {
+          "pool_id": "fof_axis",
+          "alias_code": "G596",
+          "note": "Emkay UCC for GOLDSTANDARD WEALTH A/C FLEXICAP FOF"
+        },
+        {
+          "pool_id": "hxgon_icici",
+          "alias_code": "G597",
+          "note": "Emkay UCC for GOLDSTANDARD WEALTH A/C HXGOAN QLTYOP"
+        },
+        {
+          "pool_id": "mysticv_icici",
+          "alias_code": "G601",
+          "note": "Emkay UCC for GOLDSTANDARD WEALTH A/C MYSTIC WEVA ICICI CUSTODY"
         },
         {
           "pool_id": "mysticm_icici",
           "alias_code": "G602",
-          "note": "Emkay UCC for Mystic Momentum ICICI"
+          "note": "Emkay UCC for GOLDSTANDARD WEALTH A/C MYSTIC WEMO ICICI CUSTODY"
+        },
+        {
+          "pool_id": "cautilya_axis",
+          "alias_code": "G603",
+          "note": "Emkay UCC for GOLDSTANDARD WEALTH A/C CAUTILYA TC AXIS CUSTODY"
+        },
+        {
+          "pool_id": "e50_axis",
+          "alias_code": "G604",
+          "note": "Emkay UCC for GOLDSTANDARD WEALTH A/C ER INDIA50 AXIS CUSTODY"
+        },
+        {
+          "pool_id": "goldfalpms_axis",
+          "alias_code": "G606",
+          "note": "Emkay UCC for GOLDSTANDARD WEALTH A/C FOCUSED ALPHA"
+        },
+        {
+          "pool_id": "equicalm_axis",
+          "alias_code": "G607",
+          "note": "Emkay UCC for GOLDSTANDARD WEALTH A/C EQUICALM"
+        },
+        {
+          "pool_id": "fwd57_axis",
+          "alias_code": "G608",
+          "note": "Emkay UCC for GOLDSTANDARD WEALTH A/C 57FORWARD"
+        },
+        {
+          "pool_id": "allcap_axis",
+          "alias_code": "G609",
+          "note": "Emkay UCC for GOLDSTANDARD WEALTH A/C ALLCAP"
         }
       ]
     },
     {
-      "active": true,
-      "brokerage_rate": 0.001,
-      "dealer_code": "ESSI",
-      "email_domain": "",
       "name": "Haitong Securities India Private Limited",
       "sebi_code": "HAITONG",
-      "sebi_reg_no": "INZ000026435",
+      "dealer_code": "ESSI",
       "sender_email": "India.Ops@htisec.com",
+      "email_domain": "",
       "subject_keyword": "",
+      "brokerage_rate": 0.001,
+      "active": true,
+      "sebi_reg_no": "INZ000026435",
       "pool_aliases": [
-        {
-          "pool_id": "aristos_hdfc",
-          "alias_code": "GSWP012",
-          "note": "Haitong trading code for Aristos"
-        },
-        {
-          "pool_id": "eterna_axis",
-          "alias_code": "GSWP011",
-          "note": "Haitong code for Eterna"
-        },
         {
           "pool_id": "compass_icici",
           "alias_code": "GSWP008",
-          "note": "Haitong UCC for Compass TrueNorth"
+          "note": "Haitong trading code for Compass TrueNorth"
         },
         {
           "pool_id": "mysticv_kotak",
           "alias_code": "GSWP009",
-          "note": "Haitong UCC for Mystic Value Kotak"
+          "note": "Haitong trading code for Mystic Wealth Value Kotak"
         },
         {
           "pool_id": "mysticm_kotak",
           "alias_code": "GSWP010",
-          "note": "Haitong UCC for Mystic Momentum Kotak"
+          "note": "Haitong trading code for Mystic Wealth Momentum Kotak"
+        },
+        {
+          "pool_id": "eterna_axis",
+          "alias_code": "GSWP011",
+          "note": "Haitong trading code for Eterna WCORE"
+        },
+        {
+          "pool_id": "aristos_hdfc",
+          "alias_code": "GSWP012",
+          "note": "Haitong trading code for Aristos Equity"
+        },
+        {
+          "pool_id": "ams_axis",
+          "alias_code": "GSWP015",
+          "note": "Haitong trading code for AMS Portfolio"
+        },
+        {
+          "pool_id": "ai_axis",
+          "alias_code": "GSWP016",
+          "note": "Haitong trading code for AI Portfolio"
+        },
+        {
+          "pool_id": "fof_axis",
+          "alias_code": "GSWP018",
+          "note": "Haitong trading code for Flexicap FoF"
+        },
+        {
+          "pool_id": "hxgon_icici",
+          "alias_code": "GSWP019",
+          "note": "Haitong trading code for Hxgon Quality Opportunities"
         },
         {
           "pool_id": "mysticv_icici",
           "alias_code": "GSWP021",
-          "note": "Haitong UCC for Mystic Value ICICI"
+          "note": "Haitong trading code for Mystic Wealth Value ICICI"
         },
         {
           "pool_id": "mysticm_icici",
           "alias_code": "GSWP022",
-          "note": "Haitong UCC for Mystic Momentum ICICI"
+          "note": "Haitong trading code for Mystic Wealth Momentum ICICI"
+        },
+        {
+          "pool_id": "cautilya_axis",
+          "alias_code": "GSWP023",
+          "note": "Haitong trading code for Cautilya TC Axis"
+        },
+        {
+          "pool_id": "e50_axis",
+          "alias_code": "GSWP024",
+          "note": "Haitong trading code for ER INDIA50 Axis"
+        },
+        {
+          "pool_id": "equicalm_axis",
+          "alias_code": "GSWP025",
+          "note": "Haitong trading code for Equicalm Axis Custody"
         },
         {
           "pool_id": "goldfalpms_axis",
           "alias_code": "GSWP026",
-          "note": "Haitong UCC for Focused Alpha"
+          "note": "Haitong trading code for Focused Alpha Axis Custody"
+        },
+        {
+          "pool_id": "allcap_axis",
+          "alias_code": "GSWP027",
+          "note": "Haitong trading code for AllCap Axis Custody"
+        },
+        {
+          "pool_id": "fwd57_axis",
+          "alias_code": "GSWP028",
+          "note": "Haitong trading code for 57Forward Axis Custody"
         },
         {
           "pool_id": "bjw_hdfc",
           "alias_code": "GSWP029",
-          "note": "Haitong UCC for BJW HDFC"
+          "note": "Haitong trading code for BJW HDFC Custody"
         }
       ]
     }
   ],
   "trade_sources": [
     {
-      "active": true,
+      "name": "dealer",
       "display_name": "Dealer Grid File (transactions@)",
-      "file_password": "",
-      "file_prefix": "grid",
-      "name": "dealer",
       "sender_email": "transactions@thegoldstandard.in",
-      "subject_keyword": ""
+      "subject_keyword": "",
+      "file_prefix": "grid",
+      "file_password": "",
+      "active": true
     },
     {
-      "active": true,
+      "name": "dealer",
       "display_name": "Dealer Trade Allocation (operations@)",
-      "file_password": "",
-      "file_prefix": "",
-      "name": "dealer",
       "sender_email": "operations@thegoldstandard.in",
-      "subject_keyword": "Trade Allocation File"
+      "subject_keyword": "Trade Allocation File",
+      "file_prefix": "",
+      "file_password": "",
+      "active": true
     },
     {
-      "active": true,
+      "name": "dealer",
       "display_name": "Dealer Trade Allocation (shabnam@)",
-      "file_password": "",
-      "file_prefix": "",
-      "name": "dealer",
       "sender_email": "shabnam@thegoldstandard.in",
-      "subject_keyword": "Trade Allocation File"
+      "subject_keyword": "Trade Allocation File",
+      "file_prefix": "",
+      "file_password": "",
+      "active": true
     },
     {
-      "active": true,
-      "display_name": "NSDL Contract Note Status",
-      "file_password": "",
-      "file_contains": "CNSTAT",
       "name": "nsdl",
+      "display_name": "NSDL Contract Note Status",
       "sender_email": "operations@thegoldstandard.in",
-      "subject_keyword": ""
+      "subject_keyword": "",
+      "file_contains": "CNSTAT",
+      "file_password": "",
+      "active": true
     },
     {
-      "active": false,
+      "name": "exchange",
       "display_name": "NSE Trade File",
-      "file_password": "",
-      "file_prefix": "",
-      "name": "exchange",
       "sender_email": "nse-direct@nse.co.in",
-      "subject_keyword": "Trades executed at NSE"
+      "subject_keyword": "Trades executed at NSE",
+      "file_prefix": "",
+      "file_password": "",
+      "active": false
     },
     {
-      "active": false,
+      "name": "exchange",
       "display_name": "NSE Funds/Securities Balance",
-      "file_password": "",
-      "file_prefix": "",
-      "name": "exchange",
       "sender_email": "nse_alerts@nse.co.in",
-      "subject_keyword": "Funds/Securities Balance"
+      "subject_keyword": "Funds/Securities Balance",
+      "file_prefix": "",
+      "file_password": "",
+      "active": false
     },
     {
-      "active": false,
+      "name": "exchange",
       "display_name": "BSE Funds/Securities Balance",
-      "file_password": "",
-      "file_prefix": "",
-      "name": "exchange",
       "sender_email": "info@bseindia.in",
-      "subject_keyword": "Funds / Securities Balance"
+      "subject_keyword": "Funds / Securities Balance",
+      "file_prefix": "",
+      "file_password": "",
+      "active": false
     },
     {
-      "active": true,
-      "display_name": "BSE Trade File",
-      "file_password": "",
-      "file_prefix": "",
       "name": "exchange",
+      "display_name": "BSE Trade File",
       "sender_email": "mgrpt@bseindia.com",
-      "subject_keyword": "Details of your BSE trade"
+      "subject_keyword": "Details of your BSE trade",
+      "file_prefix": "",
+      "file_password": "",
+      "active": true
     }
   ]
 }
