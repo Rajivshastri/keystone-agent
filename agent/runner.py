@@ -496,6 +496,10 @@ def execute_command(cmd_kind: str, payload: dict[str, Any]) -> CommandResult:
         # next trade-recon dispatch routes through 0096 or NSDL as picked.
         if cmd_kind == "set_dispatch_type":
             return _cmd_set_dispatch_type(payload)
+        # Trade-recon dispatch wizard: enumerate dealer grid files for
+        # the selected date so the CP UI can render a picker.
+        if cmd_kind == "list_dealer_files":
+            return _cmd_list_dealer_files(payload)
         # Masters: on-demand WS fetch + merge with local extras
         if cmd_kind == "master_client_list":
             return _cmd_master_client_list(payload)
@@ -903,6 +907,36 @@ def _cmd_set_dispatch_type(payload: dict[str, Any]) -> CommandResult:
         })
     except Exception as e:  # noqa: BLE001
         return CommandResult.failure(f"persist failed: {type(e).__name__}: {e}")
+
+
+def _cmd_list_dealer_files(payload: dict[str, Any]) -> CommandResult:
+    """Enumerate dealer grid files for a date so the CP dispatch wizard
+    can render a picker when 2+ grids exist.
+
+    Payload: {"date": "YYYY-MM-DD"}
+    Returns: {"files": [{path, basename, fetched_at, row_count, is_latest}, ...]}
+
+    Empty list when no grid files are present. Wizard dispatches a
+    trade-recon job with a subset of the returned paths via
+    job.payload.dealer_paths.
+    """
+    date_str = str((payload or {}).get("date", "")).strip()
+    if not date_str:
+        return CommandResult.failure("missing date in payload")
+    try:
+        from .config import load_settings
+        settings = load_settings()
+        fm = _file_manager(settings.workdir)
+        files = fm.list_dealer_files(date_str)
+        return CommandResult.success({
+            "date":  date_str,
+            "files": files,
+            "count": len(files),
+        })
+    except Exception as e:  # noqa: BLE001
+        return CommandResult.failure(
+            f"list_dealer_files failed: {type(e).__name__}: {e}"
+        )
 
 
 # ── Pre-reconciliation pipeline ────────────────────────────────────── #
@@ -1429,6 +1463,18 @@ def _run_trade(job: PollJob) -> RunPush:
     log(f"Starting trade reconciliation for {date_str}")
     settings = load_settings()
 
+    # Optional dealer-file picker: payload may carry a list of explicit
+    # paths (set by the CP dispatch wizard when 2+ grids exist for the
+    # date and the operator picked a subset). Empty/missing -> agent
+    # falls back to fm.get_dealer_file's single-latest behaviour.
+    _dealer_paths_raw = (job.payload or {}).get("dealer_paths") or []
+    if isinstance(_dealer_paths_raw, list):
+        dealer_paths_arg: list | None = [
+            str(p) for p in _dealer_paths_raw if p
+        ] or None
+    else:
+        dealer_paths_arg = None
+
     _pre_reconciliation(date_str, settings, log, recon_type="trade")
     settings = load_settings()
     try:
@@ -1443,6 +1489,9 @@ def _run_trade(job: PollJob) -> RunPush:
         out_dir = str(fm.output_dir(date_str))
         Path(out_dir).mkdir(parents=True, exist_ok=True)
 
+        if dealer_paths_arg:
+            log(f"Using {len(dealer_paths_arg)} operator-picked dealer file(s)")
+
         result = run_trade_recon(
             date_str,
             fm,
@@ -1451,6 +1500,7 @@ def _run_trade(job: PollJob) -> RunPush:
             pool_map_raw=pool_map_raw,
             out_dir=out_dir,
             log_fn=log,
+            dealer_paths=dealer_paths_arg,
         )
 
         # run_trade_recon returns a TradeReconResult whose .summary is a
