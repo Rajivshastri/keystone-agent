@@ -118,6 +118,12 @@ class PoolReconResult:
     # Pending settlement (equity sell proceeds + MF orders)
     mf_orders_pending:   float = 0.0   # Pending settlement amount (from CN net amounts)
     ws_adjusted_closing: float = 0.0   # WS closing minus pending sell proceeds
+    # Equity-buy cash that the bank already debited on T but WS Bank
+    # Book hasn't yet posted because the dispatched file (NSDL CNSTAT)
+    # carries no CashsettlementDate column — WS falls back to T+1.
+    # Populated only when the day's trade dispatch was NSDL; zero
+    # otherwise. Reused by the Settlement Timing variance check.
+    equity_buy_pending:  float = 0.0
 
     # Cross-check: opening + net transactions should equal closing
     cust_computed_closing: float = 0.0
@@ -209,11 +215,21 @@ class PoolReconResult:
         if self.l2_status == 'COVERED':
             return 'Clean'
 
-        # Settlement timing: adjust WS closing by pending settlement amount.
-        # When |variance| ≈ pending settlement, the bank is just T+1 behind
-        # WS — adjusted variance rounds to zero at paise.
-        if self.mf_orders_pending > 0 and not _round2_zero(self.l1_variance):
-            _adjusted_var = abs(self.l1_variance) - self.mf_orders_pending
+        # Settlement timing: adjust WS closing by pending settlement
+        # amounts. Two contributors today:
+        #   mf_orders_pending  — equity sell proceeds + MF orders not
+        #                        yet credited to WS (bank shows credit
+        #                        T+1 after WS booked the sell).
+        #   equity_buy_pending — equity buy cash that bank debited on T
+        #                        but WS Bank Book hasn't posted because
+        #                        the dispatched trade file was NSDL
+        #                        (no CashsettlementDate column → WS
+        #                        falls back to T+1 for buys).
+        # When |variance| ≈ sum of these, the bank is just one step
+        # ahead/behind WS — adjusted variance rounds to zero at paise.
+        _pending_total = (self.mf_orders_pending or 0.0) + (self.equity_buy_pending or 0.0)
+        if _pending_total > 0 and not _round2_zero(self.l1_variance):
+            _adjusted_var = abs(self.l1_variance) - _pending_total
             if _round2_zero(_adjusted_var):
                 return 'Settlement Timing'
 
@@ -271,6 +287,7 @@ class PoolReconResult:
             'ws_expenses':         self.ws_expenses,
             'ws_dep_with':         self.ws_dep_with,
             'mf_orders_pending':   self.mf_orders_pending,
+            'equity_buy_pending':  self.equity_buy_pending,
             'ws_adjusted_closing': self.ws_adjusted_closing,
             'cust_computed_closing': self.cust_computed_closing,
             'ws_computed_closing':   self.ws_computed_closing,
@@ -416,6 +433,7 @@ class BankVsWSReconEngine:
         bank_balance_history: dict = None,
         ws_opening_history:   dict = None,
         mf_orders_by_mapid:   dict = None,
+        equity_buy_by_mapid:  dict = None,
         bank_tolerance_rs:    float = None,
     ) -> BankReconSummary:
         """
@@ -732,6 +750,7 @@ class BankVsWSReconEngine:
                 ws_expenses         = ws_expenses,
                 ws_dep_with         = ws_dep_with,
                 mf_orders_pending   = (mf_orders_by_mapid or {}).get(mapid, 0.0),
+                equity_buy_pending  = (equity_buy_by_mapid or {}).get(mapid, 0.0),
                 ws_adjusted_closing = round(ws_balance_sum - (mf_orders_by_mapid or {}).get(mapid, 0.0), 2),
                 cust_computed_closing = cust_computed_closing,
                 ws_computed_closing   = ws_computed_closing,

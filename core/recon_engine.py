@@ -194,7 +194,6 @@ def load_ws_transactions(path: str, holding_date: str) -> Dict[Tuple[str, str], 
     result = defaultdict(lambda: {
         'pending_buy':  0.0, 'pending_sell': 0.0,
         'other_buy':    0.0, 'other_sell':   0.0,
-        't0_buy':       0.0,  # T0 buy: val_date==hold_date — WS booked, DEMAT credit pending
     })
     try:
         hold_dt = datetime.strptime(holding_date, '%Y-%m-%d')
@@ -220,13 +219,13 @@ def load_ws_transactions(path: str, holding_date: str) -> Dict[Tuple[str, str], 
 
             key = (client, isin)
 
-            # T0 buy: settlement == holding date, purchase only.
-            # WS includes this in ws_qty; custodian shows it in logical but NOT saleable
-            # (DEMAT credit happens end of day). Explains logical_break==0, saleable_break<0.
-            if val_dt.date() == hold_dt.date() and trxn_type == 'P':
-                result[key]['t0_buy'] += qty
-                continue
-
+            # Note: the prior T0-buy bucket (val_date == hold_date for
+            # purchases) was removed when the 0096 SettlementDate
+            # column G was changed to always emit T+1 — VALUA_DATE
+            # never lands on hold_date for new uploads, and the
+            # logical=0/saleable<0 case it explained no longer arises.
+            # Legacy data with VALUA_DATE == hold_date now flows
+            # through the normal "already settled" branch below.
             is_pending = val_dt > hold_dt
             if not is_pending:
                 # Already settled — no impact on break analysis
@@ -250,11 +249,9 @@ def load_ws_transactions(path: str, holding_date: str) -> Dict[Tuple[str, str], 
         wb.close()
         today_count = sum(1 for v in result.values()
                           if v['pending_buy'] > 0 or v['pending_sell'] > 0)
-        t0_count    = sum(1 for v in result.values() if v['t0_buy'] > 0)
         other_count = sum(1 for v in result.values()
                           if v['other_buy'] > 0 or v['other_sell'] > 0)
         logger.info(f"WS Transactions: {today_count} pending (T+2/T+3), "
-                    f"{t0_count} T0 buys (DEMAT credit pending), "
                     f"{other_count} positions with other-date trades")
     except Exception as e:
         logger.error(f"Failed to load WS transactions: {e}", exc_info=True)
@@ -548,10 +545,9 @@ class ReconEngine:
             _tt_path_for_mf = ws_transactions  # already loaded
             for (cl, isn), txn_data in _tt_path_for_mf.items():
                 if isn.upper().startswith('INF'):
-                    # Any pending or T0 activity means MF settlement in progress
+                    # Any pending activity means MF settlement in progress
                     if (txn_data.get('pending_buy', 0) > 0 or
                         txn_data.get('pending_sell', 0) > 0 or
-                        txn_data.get('t0_buy', 0) > 0 or
                         txn_data.get('other_buy', 0) > 0 or
                         txn_data.get('other_sell', 0) > 0):
                         _mf_recent_trades.add((cl, isn))
@@ -715,7 +711,6 @@ class ReconEngine:
                     'ws_adjusted':    ws_qty,  # default: no adjustment applied
                     'pending_buy':    0.0,
                     'pending_sell':   0.0,
-                    't0_buy':         0.0,
                     'other_buy':      0.0,
                     'other_sell':     0.0,
                     'logical_break':  raw_logical_break,
@@ -734,7 +729,6 @@ class ReconEngine:
 
                 else:
                     # ── Step 2: raw break — now try trade data to explain it ─────────
-                    t0_buy     = pend.get('t0_buy',      0.0)
                     pend_b_val = pend.get('pending_buy',  0.0)
                     pend_s_val = pend.get('pending_sell', 0.0)
                     other_buy  = pend.get('other_buy',    0.0)
@@ -752,24 +746,15 @@ class ReconEngine:
                         'ws_adjusted':  ws_adj,
                         'pending_buy':  pend_b_val,
                         'pending_sell': pend_s_val,
-                        't0_buy':       t0_buy,
                         'other_buy':    other_buy,
                         'other_sell':   other_sell,
                         'logical_break':  logical_break,
                         'saleable_break': saleable_break,
                     })
 
-                    # T0 buy explanation: logical matches (both sides booked it),
-                    # saleable differs because DEMAT credit is end of day.
                     if logical_break == 0:
                         # Trade adjustment resolved the logical break — clean match.
-                        # (Saleable may still differ due to settlement timing but
-                        #  we reconcile on logical holdings only.)
-                        if t0_buy > 0:
-                            row['note'] = f'T0 buy — DEMAT credit pending ({t0_buy:.0f} units)'
-                            row['category'] = self.PENDING_EXPLAINED
-                            results[self.PENDING_EXPLAINED].append(row)
-                        elif pend_b_val > 0 or pend_s_val > 0:
+                        if pend_b_val > 0 or pend_s_val > 0:
                             row['category'] = self.PENDING_EXPLAINED
                             results[self.PENDING_EXPLAINED].append(row)
                         else:

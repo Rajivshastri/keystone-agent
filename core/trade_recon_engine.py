@@ -1355,13 +1355,24 @@ class TradeReconEngine:
             dealer_code   = broker.get('dealer_code', '') if broker else ''
             brok_rate     = broker.get('brokerage_rate', 0.001) if broker else 0.001
 
-            # Settlement date is direction-dependent:
-            #   Buy  → trade date (always — never read from the CN)
-            #   Sell → CN's settlement date (T+1 next working day);
-            #          fall back to a derived T+1 only if the CN
-            #          didn't print one.
-            buy_settle  = cn.trade_date
-            sell_settle = cn.settlement_date or _add_working_days(cn.trade_date, 1)
+            # 0096 has TWO settlement-related columns and they follow
+            # different rules:
+            #
+            #   Column G — SettlementDate (actual stock-delivery date)
+            #     Always T+1 working day. Indian equities settle T+1
+            #     for both buys and sells; the demat credit/debit lands
+            #     on T+1 regardless of side. Prefer the CN's printed
+            #     settlement_date when present (broker-computed,
+            #     holiday-aware); fall back to derived T+1.
+            #
+            #   Column T — CashsettlementDate (cash-flow date)
+            #     Buy  → trade date. Custodian banks pre-fund on T
+            #            under the next-day-pay model — cash leaves
+            #            the bank account on the trade day even though
+            #            the stock arrives T+1.
+            #     Sell → T+1. Sale proceeds credit on settlement day,
+            #            same as the stock delivery.
+            stock_settle = cn.settlement_date or _add_working_days(cn.trade_date, 1)
 
             for trade in cn.trades:
                 # SCRIPT CODE: the 0096 SecurityCode column MUST be the
@@ -1398,9 +1409,10 @@ class TradeReconEngine:
                           cn.ucc)
 
                 _is_buy = trade.side.lower() == 'buy'
-                settle_date = buy_settle if _is_buy else sell_settle
-                # Cash settlement date follows the settlement date.
-                _cash_sett = settle_date
+                # Column G — always T+1, both sides. See block above.
+                settle_date = stock_settle
+                # Column T — buy on T, sell on T+1.
+                _cash_sett = cn.trade_date if _is_buy else stock_settle
 
                 rows.append(Output0096Row(
                     broker_code           = dealer_code,
