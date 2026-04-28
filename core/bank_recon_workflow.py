@@ -15,6 +15,65 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def _derive_buy_totals_from_0096(out_dir: Path) -> dict:
+    """Aggregate BUY rows from the latest 0096 file by MapinID into
+    per-pool cash debit totals.
+
+    Mirrors flask's helper. When CP gains a way to flag "today's
+    trade dispatch was NSDL" (e.g. via job payload field), agent's
+    workflow can call this and pass the result as
+    equity_buy_by_mapid to BankVsWSReconEngine.reconcile so buy-side
+    cash-flow timing variances surface as Settlement Timing instead
+    of Balance Break. Today the agent doesn't track per-day dispatch
+    type, so the helper is provided but not wired — kept here for
+    source-code parity with the flask side.
+    """
+    if not out_dir.exists():
+        return {}
+    cands = list(out_dir.glob('0096_*.xlsx')) + list(out_dir.glob('0096_*.xls'))
+    if not cands:
+        return {}
+    latest = max(cands, key=lambda p: p.stat().st_mtime)
+
+    try:
+        import openpyxl as _ox
+    except ImportError:
+        return {}
+
+    totals: dict = {}
+    try:
+        wb = _ox.load_workbook(latest, data_only=True, read_only=True)
+        ws = wb[wb.sheetnames[0]]
+        for r in ws.iter_rows(min_row=2, values_only=True):
+            if not r or len(r) < 21:
+                continue
+            txn_type = str(r[4] or '').strip()
+            if txn_type != 'BY-':
+                continue
+            try:
+                qty            = float(r[7] or 0)
+                price          = float(r[8] or 0)
+                brokerage_ps   = float(r[9] or 0)
+                service_tax_ps = float(r[10] or 0)
+                stt            = float(r[15] or 0)
+                accrued_pu     = float(r[16] or 0)
+                stamp_duty     = float(r[20] or 0)
+            except (TypeError, ValueError):
+                continue
+            mapin = str(r[17] or '').strip().upper()
+            if not mapin or qty <= 0:
+                continue
+            cash = ((price + brokerage_ps + service_tax_ps + accrued_pu) * qty
+                    + stt + stamp_duty)
+            totals[mapin] = totals.get(mapin, 0.0) + cash
+        wb.close()
+    except Exception as _e:
+        logger.warning(f'_derive_buy_totals_from_0096 failed for {latest}: {_e}')
+        return {}
+
+    return {k: round(v, 2) for k, v in totals.items()}
+
+
 class BankReconError(Exception):
     """Raised for fatal workflow errors (missing required files, no accounts found).
     Carries the parse_log so the caller can include it in the error response.
