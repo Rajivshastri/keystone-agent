@@ -61,7 +61,10 @@
       "is_bank": false,
       "name": "axis",
       "parser": "axis",
-      "sender_email": "custody.operations@axis.bank.in",
+      "sender_email": [
+        "custody.operations@axis.bank.in",
+        "custody.operations@axisbank.com"
+      ],
       "subject_keyword": "Holding Report",
       "subject_prefix": "",
       "take_last_only": false,
@@ -127,7 +130,10 @@
       "name": "axis_bank",
       "notes": "Two AES-256 encrypted zips per strategy. Different sender from holdings Axis.",
       "parser": "axis_bank",
-      "sender_email": "custody.co@axis.bank.in",
+      "sender_email": [
+        "custody.co@axis.bank.in",
+        "custody.co@axisbank.com"
+      ],
       "subject_keyword": "Bank Balance & Transaction",
       "take_last_only": true,
       "two_files": true,
