@@ -1323,6 +1323,17 @@ def _extract_via_claude(pdf_path: str,
     the fallback itself failed to run (missing SDK, missing API key, API
     auth error) — distinct from "ran successfully but found no trades".
     """
+    # TODO (revisit 2026-Q3 once IIFL CN format is stable): if cost or
+    # latency become a concern, set KEYSTONE_BROKER_PDF_AI_FALLBACK=0 to
+    # disable. Currently kept ON because pdfplumber misses ~5% of CNs and
+    # the AI fallback is the only way to recover them without a manual re-run.
+    if os.environ.get("KEYSTONE_BROKER_PDF_AI_FALLBACK", "1").strip() == "0":
+        msg = ("Claude AI PDF fallback is DISABLED via "
+               "KEYSTONE_BROKER_PDF_AI_FALLBACK=0. Trade recon may show "
+               "more 'unmatched' rows for IIFL CN PDFs.")
+        logger.info(msg)
+        return [], msg
+
     try:
         import base64
         from pdf2image import convert_from_path

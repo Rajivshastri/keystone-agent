@@ -101,7 +101,8 @@ def load_custody_snapshot(
 
         sname = source["name"]
         parser_name = source.get("parser", sname)
-        password = source.get("file_password", "")
+        from core.secret_resolver import resolve_from_source_dict
+        password = resolve_from_source_dict(source, "file_password")
 
         files = _find_custody_files(raw_root, sname)
         if not files:

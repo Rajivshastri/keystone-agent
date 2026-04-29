@@ -50,8 +50,8 @@ def _normalize_zip_prefixes(source: dict) -> list:
     """Return zip_name_prefix values as a list (stripped, case-preserved).
 
     Accepts either a string (legacy) or a list — parallel to sender_email.
-    Custodians sometimes rename their attachments (e.g. ICICI sends both
-    "End_Client_Holding_GOLDWLTH_*.zip" and
+    Custodians sometimes rename their attachments (e.g. ICICI now sends
+    both "End_Client_Holding_GOLDWLTH_*.zip" and
     "PMS_Holding_ISIN_Wise_GOLDWLTH_*.zip"), so an attachment is accepted
     if its name starts with ANY of the listed prefixes.
 
@@ -65,25 +65,85 @@ def _normalize_zip_prefixes(source: dict) -> list:
     return []
 
 
+def _received_stamp(rcvd: str) -> str:
+    """Return the email's received time as YYYYMMDDTHHMMSS, or '' if not
+    parseable. Used to tag saved filenames so a re-sent / rectified file
+    can be distinguished from the original on disk."""
+    from datetime import datetime as _dt
+    if rcvd and len(rcvd) >= 19:
+        try:
+            return _dt.strptime(rcvd[:19], '%Y-%m-%dT%H:%M:%S').strftime('%Y%m%dT%H%M%S')
+        except ValueError:
+            pass
+    return ''
+
+
+def _stamp_filename(original_name: str, rcvd: str,
+                    fallback_date: str = '') -> tuple:
+    """Return (save_name, dedup_key) for an attachment.
+
+    save_name  — original name with '_YYYYMMDDTHHMMSS' inserted before the
+                 extension. If the received time can't be parsed, fall back
+                 to '_YYYYMMDD' so we still get a stamp.
+    dedup_key  — original stem + extension (no timestamp). Used to detect
+                 "same logical file re-sent later" so newest-wins dedup
+                 works regardless of how many custodian-embedded timestamps
+                 a filename already carries.
+    """
+    from pathlib import Path as _P
+    p    = _P(original_name)
+    stem = p.stem
+    sfx  = p.suffix
+    ts   = _received_stamp(rcvd)
+    if not ts:
+        ts = (fallback_date or '').replace('-', '') or ''
+    save_name = f"{stem}_{ts}{sfx}" if ts else original_name
+    dedup_key = f"{stem}{sfx}"
+    return save_name, dedup_key
+
+
 class EmailIngestor:
 
     def __init__(self, azure_config: dict):
-        self.tenant_id     = azure_config.get('tenant_id', '').strip()
-        self.client_id     = azure_config.get('client_id', '').strip()
-        self.client_secret = azure_config.get('client_secret', '').strip()
+        # Env vars override azure.json — same pattern as source secrets.
+        # Lets us keep the M365 client_secret out of azure.json on Azure
+        # while preserving local-dev convenience.
+        self.tenant_id     = (os.environ.get('KEYSTONE_AZURE_TENANT_ID', '').strip()
+                              or azure_config.get('tenant_id', '').strip())
+        self.client_id     = (os.environ.get('KEYSTONE_AZURE_CLIENT_ID', '').strip()
+                              or azure_config.get('client_id', '').strip())
+        self.client_secret = (os.environ.get('KEYSTONE_AZURE_CLIENT_SECRET', '').strip()
+                              or azure_config.get('client_secret', '').strip())
         self.mailbox       = azure_config.get('mailbox', '').strip()
-        # Test mode: divert all outgoing email to a single address.
+        # Operator-set expiry date for client_secret (ISO YYYY-MM-DD).
+        # Azure AD secrets expire (default 6/12/24 months); when the
+        # operator rotates a secret they record its expiry here and
+        # _get_token() warns as the date approaches.
+        self.client_secret_expires_on = (
+            os.environ.get('KEYSTONE_AZURE_CLIENT_SECRET_EXPIRES_ON', '').strip()
+            or str(azure_config.get('client_secret_expires_on') or '').strip()
+        )
+        # Test mode: when set to a non-empty email address, every
+        # outgoing message has its recipients rewritten to this single
+        # address and a banner prepended to the body listing the
+        # originals. Used for troubleshooting without spamming real
+        # operations distribution lists.
         self.test_mode_email = str(azure_config.get('test_mode_email') or '').strip()
         self._token        = None
         self._token_expiry = None
+        self._expiry_warned_for: Optional[str] = None  # date we last warned about
 
     def is_configured(self) -> bool:
         return all([self.tenant_id, self.client_id,
                     self.client_secret, self.mailbox])
 
     def _apply_test_mode(self, recipients: list, body_html: str) -> tuple:
-        """When test_mode_email is set, divert outgoing mail there and
-        prepend a banner listing the originals."""
+        """Rewrite recipients + body when test mode is on.
+
+        Returns (recipients, body_html) unchanged when test_mode_email is
+        empty. When set, every outgoing email is diverted to that single
+        address with a yellow banner annotating the original recipient list.
+        """
         if not self.test_mode_email:
             return recipients, body_html
         original = ', '.join(r.strip() for r in (recipients or []) if r and r.strip()) \
@@ -103,23 +163,130 @@ class EmailIngestor:
     # ------------------------------------------------------------------ #
 
     def _get_token(self) -> Optional[str]:
-        """Get or refresh OAuth2 access token using client credentials."""
+        """Get or refresh OAuth2 access token using client credentials.
+
+        Side-effects on each call:
+          - If `client_secret_expires_on` is set, log a WARNING/ERROR
+            when the secret is within 30 / 7 days of expiry (once per
+            day per process, not per call).
+          - On token failure, detect AADSTS7000222 (client_secret
+            expired) or AADSTS7000215 (invalid secret) and re-raise
+            with a clear, actionable message instead of the opaque
+            HTTPError text.
+        """
+        # Pre-flight: warn if secret_expires_on is approaching
+        self._check_secret_expiry()
+
         now = datetime.utcnow()
         if self._token and self._token_expiry and now < self._token_expiry:
             return self._token
 
         url = TOKEN_URL.format(tenant_id=self.tenant_id)
-        resp = requests.post(url, data={
-            'grant_type':    'client_credentials',
-            'client_id':     self.client_id,
-            'client_secret': self.client_secret,
-            'scope':         GRAPH_SCOPE,
-        }, timeout=30)
-        resp.raise_for_status()
+        try:
+            resp = requests.post(url, data={
+                'grant_type':    'client_credentials',
+                'client_id':     self.client_id,
+                'client_secret': self.client_secret,
+                'scope':         GRAPH_SCOPE,
+            }, timeout=30)
+            resp.raise_for_status()
+        except requests.HTTPError as e:
+            body = ''
+            try:
+                body = e.response.text or ''
+            except Exception:
+                pass
+            if 'AADSTS7000222' in body:
+                raise RuntimeError(
+                    "M365 client_secret is EXPIRED. The email ingestor and "
+                    "all outbound notification emails will fail until a new "
+                    "secret is generated in Azure Portal -> App Registrations "
+                    "and saved via Settings -> Azure Config. Original error: "
+                    + body[:300]
+                ) from e
+            if 'AADSTS7000215' in body:
+                raise RuntimeError(
+                    "M365 client_secret is INVALID (wrong value). Verify the "
+                    "secret in Settings -> Azure Config matches the one in "
+                    "the Azure App Registration. Original error: " + body[:300]
+                ) from e
+            raise
+
         data = resp.json()
         self._token = data['access_token']
         self._token_expiry = now + timedelta(seconds=data.get('expires_in', 3600) - 60)
         return self._token
+
+    def _check_secret_expiry(self) -> None:
+        """Log days-remaining on the M365 client_secret when getting close.
+
+        Quiet when expires_on is unset (operator never recorded it).
+        Warns once per process per UTC date — repeat warnings would
+        spam the log on every email fetch.
+        """
+        if not self.client_secret_expires_on:
+            return
+        try:
+            exp = datetime.strptime(self.client_secret_expires_on[:10], '%Y-%m-%d')
+        except (ValueError, TypeError):
+            return  # Bad format — silent, operator will see "unset" in UI
+
+        today = datetime.utcnow().date()
+        days_left = (exp.date() - today).days
+        today_iso = today.isoformat()
+        if self._expiry_warned_for == today_iso:
+            return  # Already warned today
+
+        if days_left < 0:
+            logger.error(
+                f"M365 client_secret EXPIRED {-days_left} day(s) ago "
+                f"({self.client_secret_expires_on}). Token requests will "
+                f"fail. Rotate the secret in Azure Portal."
+            )
+            self._expiry_warned_for = today_iso
+        elif days_left <= 7:
+            logger.error(
+                f"M365 client_secret expires in {days_left} day(s) "
+                f"({self.client_secret_expires_on}). Rotate now to avoid "
+                f"an email ingest outage."
+            )
+            self._expiry_warned_for = today_iso
+        elif days_left <= 30:
+            logger.warning(
+                f"M365 client_secret expires in {days_left} day(s) "
+                f"({self.client_secret_expires_on}). Plan a rotation."
+            )
+            self._expiry_warned_for = today_iso
+
+    def secret_expiry_status(self) -> dict:
+        """Return {'configured': bool, 'expires_on': str, 'days_left': int|None,
+                   'severity': 'ok'|'warn'|'critical'|'expired'|'unset'}.
+
+        Used by /api/auth-me etc. so the UI can render a banner without
+        having to recompute the math itself.
+        """
+        if not self.client_secret_expires_on:
+            return {'configured': False, 'expires_on': '',
+                    'days_left': None, 'severity': 'unset'}
+        try:
+            exp = datetime.strptime(self.client_secret_expires_on[:10], '%Y-%m-%d')
+        except (ValueError, TypeError):
+            return {'configured': False, 'expires_on': self.client_secret_expires_on,
+                    'days_left': None, 'severity': 'unset'}
+        today = datetime.utcnow().date()
+        days_left = (exp.date() - today).days
+        if days_left < 0:
+            sev = 'expired'
+        elif days_left <= 7:
+            sev = 'critical'
+        elif days_left <= 30:
+            sev = 'warn'
+        else:
+            sev = 'ok'
+        return {'configured': True,
+                'expires_on': self.client_secret_expires_on,
+                'days_left': days_left,
+                'severity': sev}
 
     def _headers(self) -> dict:
         return {'Authorization': f'Bearer {self._get_token()}',
@@ -146,8 +313,9 @@ class EmailIngestor:
             dt_start_override:  Optional datetime — overrides the default lookback window
             dt_end_override:    Optional datetime — overrides the default target+2d end
             mailbox_override:   Optional mailbox UPN to use instead of
-                                self.mailbox. Used by callers that fan out
-                                one Graph call per (mailbox, sources_subset)
+                                self.mailbox (default operations@…). Used by
+                                the _run_email_fetch grouper to fan out one
+                                Graph call per (mailbox, sources_subset)
                                 group when a source declares a non-default
                                 mailbox in sources.json (e.g. value_research
                                 reads from vr@thegoldstandard.in).
@@ -176,19 +344,16 @@ class EmailIngestor:
         dt_start_s = dt_start.strftime('%Y-%m-%dT%H:%M:%SZ')
         dt_end_s   = dt_end.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-        _window_hours = int(round((dt_end - dt_start).total_seconds() / 3600))
-        # Per-source mailbox override. Most sources land in the default
+        # Per-source mailbox override.  Most sources land in the default
         # operations@thegoldstandard.in inbox; Value Research sends to
-        # vr@thegoldstandard.in. When a non-empty mailbox_override is
-        # passed, every Graph URL in this call uses it.
+        # vr@thegoldstandard.in.  When the caller supplies a non-empty
+        # mailbox_override, every Graph URL in this call uses it.
         mb = (mailbox_override or self.mailbox).strip()
-        log(f"Fetching emails from {mb} — window {dt_start_s} to {dt_end_s} "
-            f"(~{_window_hours}h)")
+
+        log(f"Fetching emails from {mb} — window {dt_start_s} to {dt_end_s}")
         log(f"Matching by sender address and zip filename prefix only")
 
-        # Fetch all messages in the window using pagination. Callers can
-        # override the default lookback via dt_start_override / dt_end_override
-        # (the incremental fetch path uses a 30-min overlap).
+        # Fetch all messages in the lookback window using pagination
         # Graph API max per page is 100 — follow @odata.nextLink until exhausted
         first_url = (f"{GRAPH_BASE}/users/{mb}/messages"
                      f"?$filter=receivedDateTime ge {dt_start_s} "
@@ -223,7 +388,7 @@ class EmailIngestor:
         _known_senders = {addr for s in sources for addr in _normalize_senders(s)}
 
         with_att = sum(1 for m in messages if m.get('hasAttachments'))
-        log(f"Found {len(messages)} email(s) in window across {page} page(s) "
+        log(f"Found {len(messages)} email(s) in lookback window across {page} page(s) "
             f"({with_att} with attachments)")
         active_sources = [s['name'] for s in sources if s.get('active', True)]
         log(f"Matching against {len(active_sources)} active source(s): {', '.join(active_sources)}")
@@ -279,10 +444,17 @@ class EmailIngestor:
             rcvd    = msg.get('receivedDateTime', '')
             source_name = matched_source['name']
             log(f"  Matched: {source_name} — {subject[:40]} (received: {rcvd[:10]})")
+            att_url = f"{GRAPH_BASE}/users/{mb}/messages/{msg_id}/attachments"
             if att_err is not None:
                 results.append({'source': source_name, 'status': 'error',
                                  'message': f"Failed to get attachments: {att_err}"})
                 continue
+
+            # Diagnostic: log every attachment we see on matched emails so
+            # dropped files aren't invisible.
+            _att_summary = [f"{a.get('name','?')} ({a.get('@odata.type','?').split('.')[-1]})"
+                             for a in attachments]
+            log(f"    Attachments ({len(attachments)}): {_att_summary}")
 
             for att in attachments:
                 att_name = att.get('name', '')
@@ -293,6 +465,7 @@ class EmailIngestor:
                 if attachment_type == 'direct':
                     ext = att_name.lower().rsplit('.', 1)[-1] if '.' in att_name else ''
                     if ext not in ('pdf', 'xls', 'xlsx', 'csv', 'zip'):
+                        log(f"    Skipping attachment (bad ext '{ext}'): {att_name}")
                         continue
                     # Fall through to download + save below
                 # Holdings sources: zip only. Bank sources: zip or txt.
@@ -309,9 +482,8 @@ class EmailIngestor:
 
                 # Check zip name prefix if configured (for zip attachments).
                 # zip_name_prefix may be a string (legacy) or a list of
-                # acceptable prefixes — match if the filename starts with
-                # ANY of them. Custodians sometimes rename their zips
-                # (ICICI now sends two patterns in parallel).
+                # acceptable prefixes. Match if the filename starts with ANY
+                # of them.
                 zip_prefixes = _normalize_zip_prefixes(matched_source)
                 if zip_prefixes and not any(
                     att_name.startswith(p) for p in zip_prefixes
@@ -323,6 +495,8 @@ class EmailIngestor:
                 # Check file prefix if configured (for direct attachments)
                 file_prefix = matched_source.get('file_prefix', '')
                 if file_prefix and not att_name.lower().startswith(file_prefix.lower()):
+                    log(f"    Skipping attachment (file_prefix mismatch): {att_name} "
+                        f"(expected startswith: {file_prefix!r})")
                     continue
 
                 # Check file_contains substring match — more resilient than
@@ -335,6 +509,8 @@ class EmailIngestor:
                 if file_contains and not any(
                     k.lower() in att_name.lower() for k in file_contains
                 ):
+                    log(f"    Skipping attachment (file_contains mismatch): {att_name} "
+                        f"(expected any of: {file_contains})")
                     continue
 
                 # Download zip content
@@ -356,17 +532,26 @@ class EmailIngestor:
                     import base64
                     zip_bytes = base64.b64decode(content_bytes)
 
-                # For Kotak: determine per-strategy subfolder from zip filename
-                # e.g. "GOLDSTANDARD WEALTH PVT LTD MYSTIC WEVA.zip" → kotak_MYSTIC_WEVA/
-                # e.g. "GOLDSTANDARD WEALTH PVT LTD MYSTIC WEMO.zip" → kotak_MYSTIC_WEMO/
-                # This applies to both source='kotak' (holdings) and source='kotak_bank' (bank CSV)
+                # For Kotak: determine per-strategy subfolder from zip filename.
+                # Kotak zips always start with "GOLDSTANDARD WEALTH PVT LTD "
+                # followed by the strategy name. Examples observed:
+                #   "GOLDSTANDARD WEALTH PVT LTD MYSTIC WEVA.zip"   → kotak_MYSTIC_WEVA
+                #   "GOLDSTANDARD WEALTH PVT LTD MYSTIC WEMO.zip"   → kotak_MYSTIC_WEMO
+                #   "GOLDSTANDARD WEALTH PVT LTD ER INDIA50.zip"    → kotak_ER_INDIA50
+                #   "GOLDSTANDARD WEALTH PVT LTD CAUTILYA TC.zip"   → kotak_CAUTILYA_TC
+                # Future strategies are handled automatically — we extract
+                # whatever comes after the common prefix.
+                # Applies to both source='kotak' (holdings) and 'kotak_bank'.
                 import re as _re
                 if source_name in ('kotak', 'kotak_bank'):
                     fname_norm = att_name.upper().replace(' ', '_')
-                    m = _re.search(r'(MYSTIC_\w+|CAUTILYA\w*|ER_INDIA\w*)', fname_norm)
+                    # Strip the file extension before matching so ".ZIP" isn't
+                    # part of the strategy suffix.
+                    stem_norm = _re.sub(r'\.(ZIP|XLSX|XLS|CSV)$', '', fname_norm)
+                    m = _re.match(r'GOLDSTANDARD_WEALTH_PVT_LTD_(.+)$', stem_norm)
                     if m:
                         strategy_suffix = m.group(1)
-                        # Holdings: kotak_MYSTIC_WEVA  |  Bank: kotak_bank_MYSTIC_WEVA
+                        # Holdings: kotak_MYSTIC_WEVA | Bank: kotak_bank_MYSTIC_WEVA
                         prefix = 'kotak_bank_' if source_name == 'kotak_bank' else 'kotak_'
                         dest_folder = f'{prefix}{strategy_suffix}'
                     else:
@@ -391,37 +576,42 @@ class EmailIngestor:
                     # — save as-is, no zip extraction needed.
                     if attachment_type == 'direct':
                         # Derive the effective date from the email received time
-                        # minus file_date_offset. This determines both the folder
-                        # and the filename date tag.
-                        from pathlib import Path as _P
+                        # minus file_date_offset. This determines the target
+                        # folder; the filename is tagged with the full received
+                        # timestamp by _stamp_filename() so rectifications can
+                        # be distinguished from originals.
                         from datetime import datetime as _dt, timedelta as _td
-                        _stem = _P(att_name).stem
-                        _sfx  = _P(att_name).suffix
-                        _rcvd_raw = rcvd[:10] if rcvd and len(rcvd) >= 10 else ''
-                        try:
-                            _rcvd_dt  = _dt.strptime(_rcvd_raw, '%Y-%m-%d').date()
-                        except ValueError:
-                            _rcvd_dt  = None
-                        _eff_dt = _rcvd_dt
+                        _rcvd_dtfull = None
+                        if rcvd and len(rcvd) >= 19:
+                            try:
+                                _rcvd_dtfull = _dt.strptime(
+                                    rcvd[:19], '%Y-%m-%dT%H:%M:%S')
+                            except ValueError:
+                                _rcvd_dtfull = None
+                        _rcvd_dt = _rcvd_dtfull.date() if _rcvd_dtfull else None
+                        _eff_dt  = _rcvd_dt
                         if _rcvd_dt and offset > 0:
                             _eff_dt = _rcvd_dt - _td(days=offset)
-                        # Folder date: effective date if available, else pivot date
                         _folder_date = _eff_dt.strftime('%Y-%m-%d') if _eff_dt else date_str
-                        # Filename date tag
-                        _date_tag = _eff_dt.strftime('%Y%m%d') if _eff_dt else date_str.replace('-', '')
-                        save_name  = f"{_stem}_{_date_tag}{_sfx}" if _date_tag not in _stem else att_name
+                        save_name, _stem_key = _stamp_filename(att_name, rcvd, _folder_date)
 
                         final_dir = str(file_manager.raw_dir(_folder_date, dest_folder))
                         Path(final_dir).mkdir(parents=True, exist_ok=True)
                         final_path = os.path.join(final_dir, save_name)
-                        # Newest-email-wins: messages are processed newest-first.
-                        if save_name in _saved_this_run:
-                            log(f"    Skipping older duplicate: {save_name} (newer version already saved)")
+                        # Dedup key — strip the timestamp tag so two emails
+                        # with different received times but the SAME logical
+                        # filename (e.g. a rectification of the same CN) are
+                        # recognised as the same document. Messages are
+                        # processed newest-first, so the FIRST save wins.
+                        dedup_key = f"{dest_folder}/{_stem_key}"
+                        if dedup_key in _saved_this_run:
+                            log(f"    Skipping older duplicate: {save_name} "
+                                f"(newer version already saved for {_stem_key})")
                             continue
                         if os.path.exists(final_path):
                             log(f"    Overwriting (re-fetch): {save_name}")
                         _shutil.move(zip_stage_path, final_path)
-                        _saved_this_run.add(save_name)
+                        _saved_this_run.add(dedup_key)
                         results.append({
                             'source':       dest_folder,
                             'holding_date': _folder_date,
@@ -439,22 +629,29 @@ class EmailIngestor:
                             att_name, date_str, offset, received_date=rcvd,
                             is_bank=is_bank_source
                         )
+                        save_name, stem_key = _stamp_filename(att_name, rcvd, holding_date)
+                        dedup_key = f"{dest_folder}/{stem_key}"
+                        if dedup_key in _saved_this_run:
+                            log(f"    Skipping older duplicate: {save_name} "
+                                f"(newer version already saved for {stem_key})")
+                            continue
                         final_dir = str(file_manager.raw_dir(holding_date, dest_folder))
                         Path(final_dir).mkdir(parents=True, exist_ok=True)
-                        final_path = os.path.join(final_dir, att_name)
+                        final_path = os.path.join(final_dir, save_name)
                         if os.path.exists(final_path):
-                            log(f"    Skipping (already have newer): {att_name}")
+                            log(f"    Skipping (already have newer): {save_name}")
                             continue
                         _shutil.move(zip_stage_path, final_path)
+                        _saved_this_run.add(dedup_key)
                         results.append({
                             'source':       dest_folder,
                             'holding_date': holding_date,
                             'status':       'ok',
-                            'zip':          att_name,
-                            'files':        [att_name],
-                            'message':      f'Saved AES-256 zip → {holding_date}/{dest_folder}/{att_name}',
+                            'zip':          save_name,
+                            'files':        [save_name],
+                            'message':      f'Saved AES-256 zip → {holding_date}/{dest_folder}/{save_name}',
                         })
-                        log(f"    → {holding_date}/{dest_folder}/{att_name} (AES-256, saved for 7z parsing)")
+                        log(f"    → {holding_date}/{dest_folder}/{save_name} (AES-256, saved for 7z parsing)")
                         continue
 
                     # Plain text/CSV attachments (ICICI bank) — save directly, no extraction.
@@ -463,25 +660,33 @@ class EmailIngestor:
                             att_name, date_str, offset, received_date=rcvd,
                             is_bank=is_bank_source
                         )
+                        save_name, stem_key = _stamp_filename(att_name, rcvd, holding_date)
+                        dedup_key = f"{dest_folder}/{stem_key}"
+                        if dedup_key in _saved_this_run:
+                            log(f"    Skipping older duplicate: {save_name} "
+                                f"(newer version already saved for {stem_key})")
+                            continue
                         final_dir = str(file_manager.raw_dir(holding_date, dest_folder))
                         Path(final_dir).mkdir(parents=True, exist_ok=True)
-                        final_path = os.path.join(final_dir, att_name)
+                        final_path = os.path.join(final_dir, save_name)
                         if os.path.exists(final_path):
-                            log(f"    Skipping (already have newer): {att_name}")
+                            log(f"    Skipping (already have newer): {save_name}")
                             continue
                         _shutil.move(zip_stage_path, final_path)
+                        _saved_this_run.add(dedup_key)
                         results.append({
                             'source':       dest_folder,
                             'holding_date': holding_date,
                             'status':       'ok',
-                            'files':        [att_name],
-                            'message':      f'Saved TXT → {holding_date}/{dest_folder}/{att_name}',
+                            'files':        [save_name],
+                            'message':      f'Saved TXT → {holding_date}/{dest_folder}/{save_name}',
                         })
-                        log(f"    → {holding_date}/{dest_folder}/{att_name}")
+                        log(f"    → {holding_date}/{dest_folder}/{save_name}")
                         continue
 
                     # Standard zip: extract with Python zipfile, route each file
-                    zip_password = matched_source.get('zip_password', '')
+                    from core.secret_resolver import resolve_from_source_dict
+                    zip_password = resolve_from_source_dict(matched_source, 'zip_password')
                     extracted, err = file_manager.extract_zip(
                         zip_stage_path, staging_dir, zip_password
                     )
@@ -571,13 +776,12 @@ class EmailIngestor:
                         fname = os.path.basename(extracted_path)
                         # For holdings sources: skip csv and zip (bank statement, nested zip)
                         # For bank sources: keep everything (csv IS the bank statement)
-                        # Exception: Kotak zips contain both XLSX (holdings) and CSV
+                        # Exception 1: Kotak zips contain both XLSX (holdings) and CSV
                         # (bank statement) — keep CSVs so bank recon can find them.
+                        # Exception 2: sources with keep_csv_in_zip=true (e.g. Vidal
+                        # EoD source) — the zip is purpose-built around its CSV.
                         is_bank_source = is_bank_source_flag
                         is_kotak = source_name in ('kotak', 'kotak_bank')
-                        # Sources with keep_csv_in_zip=true (e.g. Vidal EoD) —
-                        # the zip is purpose-built around its CSV, not a
-                        # holdings zip with a misrouted bank statement.
                         keep_csv = matched_source.get('keep_csv_in_zip', False)
                         if (not is_bank_source and not is_kotak and not keep_csv
                                 and fname.lower().endswith(('.zip', '.csv'))):
@@ -604,21 +808,28 @@ class EmailIngestor:
                                 filename_date_format=matched_source.get(
                                     'filename_date_format', ''),
                             )
+                        save_name, stem_key = _stamp_filename(fname, rcvd, holding_date)
+                        dedup_key = f"{dest_folder}/{stem_key}"
+                        if dedup_key in _saved_this_run:
+                            log(f"    Skipping older duplicate: {save_name} "
+                                f"(newer version already saved for {stem_key})")
+                            continue
                         final_dir = str(file_manager.raw_dir(holding_date, dest_folder))
                         Path(final_dir).mkdir(parents=True, exist_ok=True)
-                        final_path = os.path.join(final_dir, fname)
+                        final_path = os.path.join(final_dir, save_name)
                         # For bank sources: don't overwrite — the first-written file comes
                         # from the newest email (emails are processed newest-first).
                         # Overwriting would replace current-day data with older-day data.
                         if os.path.exists(final_path):
                             if is_bank_source:
-                                log(f"    Skipping (already have newer): {fname}")
+                                log(f"    Skipping (already have newer): {save_name}")
                                 continue
                             else:
                                 os.remove(final_path)
                         _shutil.move(extracted_path, final_path)
-                        routed_files.append((fname, holding_date))
-                        log(f"    → {holding_date}/{dest_folder}/{fname}")
+                        _saved_this_run.add(dedup_key)
+                        routed_files.append((save_name, holding_date))
+                        log(f"    → {holding_date}/{dest_folder}/{save_name}")
 
                     if routed_files:
                         # Group by holding date for the result summary
@@ -763,12 +974,15 @@ class EmailIngestor:
 
         # ── Date patterns in filename ─────────────────────────────────
         # Sources with `filename_date_format` in their config get a more
-        # specific pattern set (e.g. Vidal's XX{DDMMYY} short-year names
-        # that the default 8-digit regex misses). Default falls through
-        # to the original 8-digit-or-separated patterns.
+        # specific pattern set. Default falls through to the original
+        # 8-digit-or-separated patterns. Useful for Vidal-style filenames
+        # like XC240426.csv where DDMMYY=240426 (April 24, 2026) is too
+        # short for the default 8-digit regex to match.
         if filename_date_format == 'DDMMYY':
             patterns = [
-                # 2-letter prefix + DDMMYY at start; resolves YY → 20YY
+                # Match a 2-letter prefix + DDMMYY at start to avoid
+                # picking up arbitrary 6-digit runs elsewhere in the
+                # filename. Resolves to a 4-digit year as 2000 + YY.
                 (r'^[A-Za-z]{2}(\d{2})(\d{2})(\d{2})\b', 'DDMMYY'),
             ]
         else:
@@ -875,13 +1089,16 @@ class EmailIngestor:
             return {'ok': False, 'message': 'No recipients specified.'}
 
         from datetime import datetime as _dt
-        display_date = _dt.strptime(date_str, '%Y-%m-%d').strftime('%d-%m-%Y')
+        display_date = _dt.strptime(date_str, '%Y-%m-%d').strftime('%d %B %Y')
 
         cats = [
             ('unexplained',       '&#x2717; Unexplained Breaks',     '#B03030', '#FDF1F1'),
             ('minor_break',       '&#x26A0; Minor Breaks (&lt;1)',    '#B06820', '#FFF8E1'),
             ('custody_only',      '+ Custody Only',                   '#2A4FA8', '#EEF4FF'),
             ('ws_only',           '&#x2212; WS Only',                 '#E65100', '#FFF3E0'),
+            ('investor_alloc_not_communicated',
+                                  '! Investor Allocation Not Communicated',
+                                                                       '#8E3FA0', '#F4ECF8'),
             ('pending_explained', '&#x7E; Pending Explained',         '#B06820', '#FDF5EB'),
             ('clean',             '&#x2713; Clean Matches',           '#1A7A4A', '#EAF7F0'),
         ]
@@ -889,7 +1106,8 @@ class EmailIngestor:
         total     = sum(len(v) for v in results.values())
         has_breaks = bool(results.get('unexplained') or
                           results.get('custody_only') or
-                          results.get('ws_only'))
+                          results.get('ws_only') or
+                          results.get('investor_alloc_not_communicated'))
         status_c  = '#B03030' if has_breaks else '#1A7A4A'
         status_t  = 'ACTION REQUIRED' if has_breaks else 'ALL CLEAR'
 
@@ -898,7 +1116,8 @@ class EmailIngestor:
         for cat, label, fg, bg in cats:
             count = len(results.get(cat, []))
             bold  = 'font-weight:bold;' if count > 0 and cat in (
-                'unexplained', 'custody_only', 'ws_only') else ''
+                'unexplained', 'custody_only', 'ws_only',
+                'investor_alloc_not_communicated') else ''
             trows += (
                 f'<tr><td style="padding:8px 14px;border-bottom:1px solid #e0e5ed;'
                 f'background:{bg};color:{fg};{bold}">{label}</td>'
@@ -1082,7 +1301,7 @@ class EmailIngestor:
             return {'ok': False, 'message': 'No recipients specified.'}
 
         from datetime import datetime as _dt
-        display_date = _dt.strptime(date_str, '%Y-%m-%d').strftime('%d-%m-%Y')
+        display_date = _dt.strptime(date_str, '%Y-%m-%d').strftime('%d %B %Y')
 
         n_clean   = summary_dict.get('clean',       0)
         n_breaks  = summary_dict.get('breaks',      0)
@@ -1284,14 +1503,14 @@ class EmailIngestor:
 
         from datetime import datetime as _dt
         try:
-            display_date = _dt.strptime(date_str, '%Y-%m-%d').strftime('%d-%m-%Y')
+            display_date = _dt.strptime(date_str, '%Y-%m-%d').strftime('%d %B %Y')
         except ValueError:
             display_date = date_str
 
         try:
             sent_dt    = _dt.fromisoformat(initial_sent_at)
             hours_ago  = max(1, int((_dt.utcnow() - sent_dt).total_seconds() // 3600))
-            sent_label = sent_dt.strftime('%d-%m-%Y %H:%M UTC')
+            sent_label = sent_dt.strftime('%d %b %Y %H:%M UTC')
         except Exception:
             hours_ago  = reminder_count + 1
             sent_label = initial_sent_at or 'earlier today'
@@ -1382,7 +1601,7 @@ class EmailIngestor:
             return {'ok': False, 'message': 'No recipients specified.'}
 
         from datetime import datetime as _dt
-        display_date = _dt.strptime(date_str, '%Y-%m-%d').strftime('%d-%m-%Y')
+        display_date = _dt.strptime(date_str, '%Y-%m-%d').strftime('%d %B %Y')
         c1 = summary_dict.get('c1_breaks', 0)
         c2 = summary_dict.get('c2_breaks', 0)
         c3 = summary_dict.get('c3_breaks', 0)
@@ -1459,6 +1678,178 @@ class EmailIngestor:
             logger.error(f'Trade recon email failed: {e}')
             return {'ok': False, 'message': str(e)}
 
+    def send_workflow_summary(self, *, kind: str, date_str: str,
+                              recipients: list,
+                              errors: list[str] | None = None,
+                              detail_lines: list[str] | None = None,
+                              pdf_summary: str = '',
+                              pdf_sections: dict | None = None,
+                              attachment_path: str = '',
+                              attachment_content_type: str = 'application/pdf'
+                              ) -> dict:
+        """Send a BoD or EoD pipeline completion email.
+
+        Generic equivalent of ``send_recon_summary`` for the workflow
+        pipelines (Morning BoD, Evening EoD). Recipients come from the
+        same ``recon_recipients`` list in azure config — caller is
+        responsible for fetching them.
+
+        Body sections (rendered top-to-bottom, only non-empty appear):
+          - Status banner: green "ALL CLEAR" or red "ACTION REQUIRED".
+          - Errors block (red) — one bullet per error string.
+          - Detail lines (neutral) — short status notes from the pipeline.
+          - PDF section summary (EoD only) — section name + truncated rows.
+
+        ``attachment_path`` is optional; for EoD this is the recon PDF.
+        """
+        if not self.is_configured():
+            return {'ok': False, 'message': 'Azure credentials not configured.'}
+        if not recipients:
+            return {'ok': False, 'message': 'No recipients specified.'}
+
+        from datetime import datetime as _dt
+        try:
+            display_date = _dt.strptime(date_str, '%Y-%m-%d').strftime('%d %B %Y')
+        except ValueError:
+            display_date = date_str
+        errors = errors or []
+        detail_lines = detail_lines or []
+        pdf_sections = pdf_sections or {}
+
+        has_errors = bool(errors)
+        status_c = '#B03030' if has_errors else '#1A7A4A'
+        status_t = 'ACTION REQUIRED' if has_errors else 'ALL CLEAR'
+        subject_prefix = '[ACTION]' if has_errors else '[OK]'
+        subject = f'{subject_prefix} {kind} {display_date} — {status_t}'
+
+        def _esc(s: str) -> str:
+            return (s.replace('&', '&amp;').replace('<', '&lt;')
+                     .replace('>', '&gt;'))
+
+        parts: list[str] = [
+            f'<div style="font-family:Arial,sans-serif;color:#222">',
+            f'<div style="background:{status_c};color:#fff;padding:14px 18px;'
+            f'border-radius:6px;margin-bottom:16px">'
+            f'<div style="font-size:12px;letter-spacing:1px;opacity:.85">'
+            f'{kind.upper()} STATUS</div>'
+            f'<div style="font-size:20px;font-weight:bold;margin-top:4px">'
+            f'{status_t}</div>'
+            f'<div style="font-size:13px;margin-top:6px">{display_date}</div>'
+            f'</div>',
+        ]
+
+        if has_errors:
+            parts.append(
+                f'<h3 style="color:#B03030;margin:18px 0 8px">'
+                f'Errors ({len(errors)})</h3>'
+                f'<ul style="font-size:13px;line-height:1.55">'
+                + ''.join(f'<li>{_esc(e)}</li>' for e in errors)
+                + '</ul>'
+            )
+
+        if detail_lines:
+            parts.append(
+                f'<h3 style="color:#444;margin:18px 0 8px">Pipeline notes</h3>'
+                f'<ul style="font-size:13px;line-height:1.55;color:#444">'
+                + ''.join(f'<li>{_esc(d)}</li>' for d in detail_lines)
+                + '</ul>'
+            )
+
+        if pdf_summary:
+            parts.append(
+                f'<h3 style="color:#444;margin:22px 0 8px">'
+                f'Reconciliation Statement Summary</h3>'
+                f'<p style="font-size:13px;color:#444;margin:0 0 10px">'
+                f'{_esc(pdf_summary)}</p>'
+            )
+        if pdf_sections:
+            parts.append(
+                '<table style="border-collapse:collapse;width:100%;'
+                'font-family:Arial,sans-serif;font-size:12px">'
+            )
+            for name, rows in pdf_sections.items():
+                parts.append(
+                    f'<tr><td colspan="2" style="background:#FAFCFF;'
+                    f'padding:8px 12px;border-bottom:1px solid #DDE3EF;'
+                    f'font-weight:bold;color:#333">'
+                    f'{_esc(name)} ({len(rows)} row'
+                    f'{"" if len(rows)==1 else "s"})</td></tr>'
+                )
+                head = rows[:25]
+                for r in head:
+                    parts.append(
+                        f'<tr><td style="padding:4px 12px;border-bottom:'
+                        f'1px solid #eee;color:#555;font-size:12px">'
+                        f'• {_esc(r)}</td></tr>'
+                    )
+                extra = len(rows) - len(head)
+                if extra > 0:
+                    parts.append(
+                        f'<tr><td style="padding:4px 12px;color:#888;'
+                        f'font-style:italic">'
+                        f'… (+{extra} more — see attached PDF)'
+                        f'</td></tr>'
+                    )
+            parts.append('</table>')
+
+        parts.append(
+            f'<p style="font-size:11px;color:#888;margin:24px 0 0;'
+            f'border-top:1px solid #e0e5ed;padding-top:12px">'
+            f'Generated by Keystone &#8212; GoldStandard Wealth Pvt Ltd</p>'
+            f'</div>'
+        )
+        html_body = '\n'.join(parts)
+
+        recipients, html_body = self._apply_test_mode(recipients, html_body)
+
+        attachments = []
+        if attachment_path and os.path.exists(attachment_path):
+            try:
+                import base64 as _b64
+                with open(attachment_path, 'rb') as _f:
+                    file_bytes = _f.read()
+                attachments = [{
+                    '@odata.type':  '#microsoft.graph.fileAttachment',
+                    'name':         os.path.basename(attachment_path),
+                    'contentType':  attachment_content_type,
+                    'contentBytes': _b64.b64encode(file_bytes).decode('utf-8'),
+                }]
+                logger.info(f"Attaching file: "
+                            f"{os.path.basename(attachment_path)} "
+                            f"({len(file_bytes):,} bytes)")
+            except Exception as e:
+                logger.warning(f"Could not attach file: {e}")
+
+        payload = {
+            'message': {
+                'subject': subject,
+                'body': {'contentType': 'HTML', 'content': html_body},
+                'toRecipients': [
+                    {'emailAddress': {'address': r.strip()}}
+                    for r in recipients if r.strip()
+                ],
+                'attachments': attachments,
+            },
+            'saveToSentItems': True,
+        }
+
+        url = f"{GRAPH_BASE}/users/{self.mailbox}/sendMail"
+        try:
+            resp = requests.post(url, headers=self._headers(),
+                                 json=payload, timeout=30)
+            resp.raise_for_status()
+            logger.info(f"{kind} workflow email sent to: {recipients}")
+            return {'ok': True,
+                    'message': f"{kind} email sent to {', '.join(recipients)}"}
+        except requests.HTTPError as e:
+            msg = (f"Graph API error {e.response.status_code}: "
+                   f"{e.response.text[:300]}")
+            logger.error(f"{kind} workflow email failed: {msg}")
+            return {'ok': False, 'message': msg}
+        except Exception as e:
+            logger.error(f"{kind} workflow email failed: {e}")
+            return {'ok': False, 'message': str(e)}
+
 
     def archive_for_date(self, date_str: str, sources: List[dict],
                          archive_base_dir: str,
@@ -1467,7 +1858,7 @@ class EmailIngestor:
                          mailbox_override: str = '') -> dict:
         """
         Archive all emails (body + attachments) from configured sender addresses
-        for the lookback window around date_str.
+        for the lookback window around date_str (or narrowed via `since`).
 
         Versioning strategy:
           - If a file already exists in the archive, rename the OLD file with a
@@ -1506,7 +1897,8 @@ class EmailIngestor:
         # Scope the archive pass to the same window the fetch used. If the
         # caller passed `since`, start there (minus a 30-min overlap to match
         # the fetch's jitter budget). Otherwise fall back to a 1-day lookback
-        # around date_str.
+        # around date_str — the full admin-override window is separately
+        # driven by each day's own archive_for_date call.
         target_dt  = datetime.strptime(date_str, '%Y-%m-%d')
         dt_end     = target_dt + timedelta(days=2)
         if since:
@@ -1519,8 +1911,6 @@ class EmailIngestor:
             dt_start = target_dt - timedelta(days=1)
         dt_start_s = dt_start.strftime('%Y-%m-%dT%H:%M:%SZ')
         dt_end_s   = dt_end.strftime('%Y-%m-%dT%H:%M:%SZ')
-
-        # Per-source mailbox override (mirrors fetch_for_date).
         mb = (mailbox_override or self.mailbox).strip()
 
         # Fetch messages including body (need a separate select to get body)
@@ -1702,173 +2092,3 @@ class EmailIngestor:
             log("Archive: no matching emails found")
 
         return summary
-
-    def send_explanation_followup(self,
-                                  recon_type: str,
-                                  date_str: str,
-                                  recipients: list,
-                                  explanations: list,
-                                  explainer_email: str = '',
-                                  accepted_all: bool = False,
-                                  attachment_path: str = None) -> dict:
-        """Send the post-explanation follow-up email.
-
-        Called by the _cmd_send_final_email agent handler after an
-        operator submits per-break explanations (or accept-all) via
-        the control plane's explain page. Builds a minimal HTML body
-        listing every explanation + the explainer's email + an
-        accept-all indicator, and attaches the existing Excel report
-        (if still on disk).
-
-        Separate from send_recon_summary / send_bank_recon_summary
-        because those methods expect the full in-memory results /
-        summary dict at recon time; by the time we're following up,
-        the process has long exited and all we have is the sidecar.
-        This method only needs the explanations payload (which came
-        from the control plane) and the on-disk Excel path.
-
-        Args:
-            recon_type:       "bank" / "holdings" (trade doesn't use)
-            date_str:         YYYY-MM-DD
-            recipients:       list of email addresses
-            explanations:     list of {break_id, explanation, explained_amount}
-            explainer_email:  email of the operator who explained
-            accepted_all:     True if the operator hit "Accept all"
-            attachment_path:  absolute path to the Keystone_* Excel
-
-        Returns dict {ok, message}.
-        """
-        if not self.is_configured():
-            return {'ok': False, 'message': 'Azure credentials not configured.'}
-        if not recipients:
-            return {'ok': False, 'message': 'No recipients specified.'}
-
-        from datetime import datetime as _dt
-        try:
-            display_date = _dt.strptime(date_str, '%Y-%m-%d').strftime('%d-%m-%Y')
-        except ValueError:
-            display_date = date_str
-
-        type_label = recon_type.capitalize()
-        subject_prefix = '[EXPLAINED]' if accepted_all else '[UPDATE]'
-        subject = f"{subject_prefix} {type_label} Recon {display_date}"
-
-        # Build the explanations list as HTML rows.
-        rows_html = ''
-        for exp in (explanations or []):
-            bid = str(exp.get('break_id') or '')
-            text = str(exp.get('explanation') or '').replace('<', '&lt;').replace('>', '&gt;')
-            amt = exp.get('explained_amount')
-            amt_cell = ''
-            if amt is not None and str(amt).strip():
-                try:
-                    amt_val = float(amt)
-                    amt_cell = f'<td style="padding:6px 10px;font-family:monospace;text-align:right;border:1px solid #e0e0e0">₹{amt_val:,.2f}</td>'
-                except (TypeError, ValueError):
-                    amt_cell = f'<td style="padding:6px 10px;border:1px solid #e0e0e0">{amt}</td>'
-            else:
-                amt_cell = '<td style="padding:6px 10px;color:#999;border:1px solid #e0e0e0">—</td>'
-            rows_html += (
-                f'<tr>'
-                f'<td style="padding:6px 10px;font-family:monospace;border:1px solid #e0e0e0">{bid}</td>'
-                f'<td style="padding:6px 10px;border:1px solid #e0e0e0">{text}</td>'
-                f'{amt_cell}'
-                f'</tr>'
-            )
-
-        explainer_line = (
-            f'<p style="margin:16px 0 8px;color:#555">'
-            f'Explained by <strong>{explainer_email}</strong></p>'
-            if explainer_email else ''
-        )
-        accept_note = (
-            '<p style="color:#1A7A4A;font-weight:600;margin:12px 0">'
-            '&#x2713; All breaks have been explained or are within tolerance. '
-            'The operator has accepted the run.</p>'
-            if accepted_all else ''
-        )
-
-        if rows_html:
-            table_html = (
-                '<table style="border-collapse:collapse;width:100%;'
-                'font-family:Arial,sans-serif;font-size:13px;margin:12px 0">'
-                '<thead><tr style="background:#1B2A4A;color:white">'
-                '<th style="padding:8px 10px;text-align:left">Break</th>'
-                '<th style="padding:8px 10px;text-align:left">Explanation</th>'
-                '<th style="padding:8px 10px;text-align:right">Amount</th>'
-                '</tr></thead><tbody>' + rows_html + '</tbody></table>'
-            )
-        else:
-            table_html = (
-                '<p style="color:#666;margin:12px 0">'
-                'No per-break explanations were submitted. '
-                '(All breaks were within tolerance.)</p>'
-            )
-
-        body_html = (
-            '<div style="font-family:Arial,sans-serif;max-width:720px;'
-            'padding:20px;color:#1B2A4A">'
-            f'<h2 style="color:#AC8A2F;margin:0 0 12px">'
-            f'{type_label} Reconciliation &mdash; {display_date} &mdash; {subject_prefix}'
-            '</h2>'
-            f'{explainer_line}'
-            f'{accept_note}'
-            f'{table_html}'
-            '<p style="color:#666;font-size:12px;margin-top:16px">'
-            'The updated reconciliation report is attached. This follow-up '
-            'closes the open break window &mdash; no further hourly reminders will fire.'
-            '</p>'
-            '<p style="color:#888;font-size:11px;margin-top:20px">'
-            'Generated by Keystone &mdash; GoldStandard Wealth Pvt Ltd'
-            '</p>'
-            '</div>'
-        )
-
-        # Build attachments
-        import base64 as _b64, os as _os
-        attachments = []
-        if attachment_path and _os.path.exists(attachment_path):
-            try:
-                with open(attachment_path, 'rb') as _f:
-                    file_bytes = _f.read()
-                attachments = [{
-                    '@odata.type':  '#microsoft.graph.fileAttachment',
-                    'name':         _os.path.basename(attachment_path),
-                    'contentType':  'application/octet-stream',
-                    'contentBytes': _b64.b64encode(file_bytes).decode('ascii'),
-                }]
-            except Exception as e:
-                logger.warning(f'send_explanation_followup: attach failed: {e}')
-
-        token = self._get_token()
-        mailbox = self.mailbox
-        import requests as _req
-        try:
-            r = _req.post(
-                f'https://graph.microsoft.com/v1.0/users/{mailbox}/sendMail',
-                headers={'Authorization': f'Bearer {token}',
-                         'Content-Type': 'application/json'},
-                json={
-                    'message': {
-                        'subject': subject,
-                        'body': {'contentType': 'HTML', 'content': body_html},
-                        'toRecipients': [
-                            {'emailAddress': {'address': r}} for r in recipients
-                        ],
-                        'attachments': attachments,
-                    },
-                    'saveToSentItems': True,
-                },
-                timeout=30,
-            )
-        except Exception as e:  # noqa: BLE001
-            return {'ok': False, 'message': f'network error: {e}'}
-        if r.status_code not in (200, 202):
-            return {
-                'ok':      False,
-                'message': f'Graph sendMail {r.status_code}: {r.text[:300]}',
-            }
-        return {
-            'ok':      True,
-            'message': f'sent to {len(recipients)} recipient(s)',
-        }

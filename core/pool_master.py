@@ -11,7 +11,12 @@ Columns in the xlsx (0-based):
   3  DPCLIENTID     e.g. 20886076
   4  REMARKS        Strategy description
   5  REFCODE1..10   REFCODE6 = Kotak client account number (9000032175)
-  15 FIRMID         e.g. GOLDETEPMS, GWPJ0004, MYSTICM  (= custodian alias)
+  15 FIRMID         WS exports this column populated with 0.0 in the
+                    files we receive — value is NOT used. The MAPINID
+                    (col 0) doubles as the custodian alias / firmid.
+                    If WS ever ships a populated col 15 the ingest
+                    will need updating; until then `info['firmid']`
+                    is set to the MAPINID.
   16 POOLID         WS Pool/Scheme code (float 1.0, 2.0 …)
 
 Lookup tables built:
@@ -38,6 +43,11 @@ class PoolMaster:
         self.kotak_client_to_mapid: Dict[str, str] = {}   # kotak client id -> mapid
         self.mapid_to_info:         Dict[str, dict] = {}  # mapid -> full info
         self._loaded = False
+        # Tripwire: WS historically ships col 15 (FIRMID) as 0.0 for every
+        # row and we use MAPINID (col 0) as the firmid. If WS ever turns
+        # col 15 on, we want to KNOW about it instead of silently ignoring
+        # it. _col15_warned ensures we log once per load(), not per row.
+        self._col15_warned = False
 
     # ------------------------------------------------------------------ #
 
@@ -99,7 +109,27 @@ class PoolMaster:
         kotak_client = refcodes[5]   # REFCODE6 = col 10 = refcodes index 5
         # FIRMID (col 15) is stored as 0.0 in this file — not used
         # The MAPINID itself IS the firmid-equivalent (e.g. GOLDETEPMS, GWPJ0004, MYSTICM)
-        pool_id    = row[16] if len(row) > 16 else None
+        firmid_col15 = row[15] if len(row) > 15 else None
+        pool_id      = row[16] if len(row) > 16 else None
+
+        # Tripwire — if WS ever populates col 15 with a real firmid, we
+        # want a loud warning. Log once per load (not per row). The
+        # value is still ignored for now — flip to active use only after
+        # an operator confirms it should override MAPINID.
+        if firmid_col15 not in (None, '', 0, 0.0) and not self._col15_warned:
+            try:
+                _is_zero = float(firmid_col15) == 0.0
+            except (TypeError, ValueError):
+                _is_zero = False
+            if not _is_zero:
+                logger.warning(
+                    f"PoolMaster: col 15 (FIRMID) is now populated "
+                    f"(first seen on MAPINID={mapid!r}, value={firmid_col15!r}). "
+                    f"Currently IGNORED — MAPINID is still used as the firmid. "
+                    f"If WS expects col 15 to override MAPINID, update "
+                    f"core/pool_master.py:_ingest_row to use it."
+                )
+                self._col15_warned = True
 
         if not mapid:
             return
