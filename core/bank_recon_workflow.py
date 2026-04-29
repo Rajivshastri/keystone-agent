@@ -35,16 +35,43 @@ def _derive_buy_totals_from_0096(out_dir: Path) -> dict:
         return {}
     latest = max(cands, key=lambda p: p.stat().st_mtime)
 
-    try:
-        import openpyxl as _ox
-    except ImportError:
+    # Reads both .xlsx (openpyxl) and .xls (xlrd) — the trade-recon
+    # workflow writes the dispatch file as .xls, which openpyxl cannot
+    # read. Same fix applied flask-side.
+    def _rows_xlsx(path: Path):
+        try:
+            import openpyxl as _ox
+        except ImportError:
+            return None
+        wb = _ox.load_workbook(path, data_only=True, read_only=True)
+        try:
+            ws = wb[wb.sheetnames[0]]
+            for r in ws.iter_rows(min_row=2, values_only=True):
+                yield r
+        finally:
+            wb.close()
+
+    def _rows_xls(path: Path):
+        try:
+            import xlrd as _xr
+        except ImportError:
+            return None
+        wb = _xr.open_workbook(str(path))
+        try:
+            sh = wb.sheet_by_index(0)
+            for ridx in range(1, sh.nrows):
+                yield tuple(sh.cell_value(ridx, c) for c in range(sh.ncols))
+        finally:
+            wb.release_resources()
+
+    rows_iter = _rows_xls(latest) if latest.suffix.lower() == '.xls' else _rows_xlsx(latest)
+    if rows_iter is None:
+        logger.warning(f'_derive_buy_totals_from_0096: no reader available for {latest}')
         return {}
 
     totals: dict = {}
     try:
-        wb = _ox.load_workbook(latest, data_only=True, read_only=True)
-        ws = wb[wb.sheetnames[0]]
-        for r in ws.iter_rows(min_row=2, values_only=True):
+        for r in rows_iter:
             if not r or len(r) < 21:
                 continue
             txn_type = str(r[4] or '').strip()
@@ -66,7 +93,6 @@ def _derive_buy_totals_from_0096(out_dir: Path) -> dict:
             cash = ((price + brokerage_ps + service_tax_ps + accrued_pu) * qty
                     + stt + stamp_duty)
             totals[mapin] = totals.get(mapin, 0.0) + cash
-        wb.close()
     except Exception as _e:
         logger.warning(f'_derive_buy_totals_from_0096 failed for {latest}: {_e}')
         return {}
