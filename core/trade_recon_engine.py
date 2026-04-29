@@ -772,15 +772,25 @@ class TradeReconEngine:
             # parsed set but under a different broker code. Resolve dealer
             # mapin to its canonical form so alias entries collapse, then
             # look up by (canonical_mapin, isin, side) only.
+            # Apply the same 1% qty-proximity filter Pass 3 uses;
+            # otherwise multi-broker CNs aggregate into a single dealer
+            # match → false QTY_BREAK.
             canon_mapin = _canonical_ucc(ucc)
             cns = cn_pool_isin.get((canon_mapin, isin, side), [])
             if cns:
+                qty_filtered = [
+                    cn for cn in cns
+                    if any(abs(t.qty - dt.fill_qty) <= max(1, dt.fill_qty * 0.01)
+                           for t in cn.trades)
+                ]
+                cns = qty_filtered or cns
                 logger.info(
                     f'C2 broker-blind match: dealer broker={dc!r} did NOT '
                     f'match any CN, but pool {canon_mapin}/{isin}/{side} '
                     f'has {len(cns)} CN(s) under different broker(s) '
                     f'{sorted({c.broker_sebi for c in cns})!r}. '
-                    f'Falling back to broker-blind match.')
+                    f'Falling back to broker-blind match'
+                    f'{" (qty-filtered)" if qty_filtered else " (no qty match — using all)"}.')
                 return cns
 
             return []
