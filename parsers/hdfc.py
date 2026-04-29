@@ -77,8 +77,9 @@ class HDFCParser(BaseParser):
                 # Skip non-data rows (empty, total rows, etc.)
                 if not client_code or not isin or len(isin) < 5:
                     continue
-                if not client_code.startswith(broker_code[:2]):
-                    continue
+                # Previously: `if not client_code.startswith(broker_code[:2]):`
+                # silently dropped multi-strategy / cross-prefix files.
+                # The empty / short-ISIN checks above are sufficient.
 
                 logical  = self.clean_number(cells[COL_BOOK_POS])
                 saleable = self.clean_number(cells[COL_TOTAL_SALE])

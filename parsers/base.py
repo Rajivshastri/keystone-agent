@@ -78,13 +78,22 @@ class BaseParser:
 
     @staticmethod
     def clean_number(value) -> float:
-        """Clean Indian-formatted numbers (1,00,000 → 100000.0)."""
+        """Clean Indian-formatted numbers (1,00,000 → 100000.0).
+
+        Also handles parenthetical negatives — Indian custodian reports
+        commonly write `(500)` for −500 (sells, short positions, debits).
+        """
         if value is None:
             return 0.0
         if isinstance(value, (int, float)):
             return float(value)
-        s = str(value).replace(',', '').strip()
+        s = str(value).strip()
+        s = s.replace(',', '').replace('₹', '').replace('Rs.', '').replace('Rs', '').strip()
+        is_neg_parens = s.startswith('(') and s.endswith(')')
+        if is_neg_parens:
+            s = s[1:-1].strip()
         try:
-            return float(s)
+            n = float(s)
+            return -n if is_neg_parens else n
         except (ValueError, TypeError):
             return 0.0

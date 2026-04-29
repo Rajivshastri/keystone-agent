@@ -51,9 +51,6 @@ class AxisParser(BaseParser):
 
         try:
             wb = self._open_workbook(file_path, file_password)
-            if wb is None:
-                result.error = f"Could not open Axis file (check password in Settings). See log for detail."
-                return result
 
             sheet_name = 'Holding Report1'
             if sheet_name not in wb.sheetnames:
@@ -110,20 +107,23 @@ class AxisParser(BaseParser):
         return result
 
     def _open_workbook(self, file_path: str, password: str):
-        """Open xlsx — handles both plain and CDFV2-encrypted files."""
+        """Open xlsx — handles both plain and CDFV2-encrypted files.
+
+        Raises with the specific failure cause (wrong password / corrupt
+        file / msoffcrypto bug) instead of returning None.
+        """
         plain_error = None
 
-        # Try plain open first (file may not be encrypted)
         try:
             return openpyxl.load_workbook(file_path)
         except Exception as e:
             plain_error = e
 
-        # Try msoffcrypto decrypt
         if not password:
-            logger.warning(f"Axis file appears encrypted but no password provided. "
-                           f"Plain open error: {plain_error}")
-            return None
+            raise RuntimeError(
+                f"Axis file is encrypted but no file_password is configured. "
+                f"Plain-open error: {plain_error}"
+            )
 
         try:
             with open(file_path, 'rb') as f:
@@ -133,14 +133,13 @@ class AxisParser(BaseParser):
                 office_file.decrypt(decrypted)
                 decrypted.seek(0)
                 return openpyxl.load_workbook(decrypted)
+        except msoffcrypto.exceptions.InvalidKeyError as e:
+            raise RuntimeError(
+                f"Axis file decryption failed: wrong password. "
+                f"Underlying: {e}"
+            )
         except Exception as e:
-            logger.error(f"Axis decrypt failed (plain_err={plain_error}, "
-                         f"decrypt_err={e}) — file: {file_path}")
-            # Last resort: try opening as a zip (xlsx is a zip) with no password
-            try:
-                import zipfile
-                if zipfile.is_zipfile(file_path):
-                    return openpyxl.load_workbook(file_path, read_only=False)
-            except Exception:
-                pass
-            return None
+            raise RuntimeError(
+                f"Axis file decryption failed (msoffcrypto: {type(e).__name__}: {e}; "
+                f"plain-open error: {plain_error})"
+            )
