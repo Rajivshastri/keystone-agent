@@ -200,6 +200,20 @@ def init_db():
             "ALTER TABLE clients ADD COLUMN pending_recipients TEXT",
             "ALTER TABLE clients ADD COLUMN submitted_at       TEXT",
             "ALTER TABLE clients ADD COLUMN auth_notes         TEXT",
+            # ClientDetail.xls backfill — WS exposes per-client AUM and
+            # a few identifiers that didn't have a home in the registry.
+            "ALTER TABLE clients ADD COLUMN ws_client_id        TEXT",
+            "ALTER TABLE clients ADD COLUMN ws_client_code      TEXT",
+            "ALTER TABLE clients ADD COLUMN ws_group_id         TEXT",
+            "ALTER TABLE clients ADD COLUMN broker_acid         TEXT",
+            "ALTER TABLE clients ADD COLUMN trxn_taken_as       TEXT",
+            "ALTER TABLE clients ADD COLUMN assets              REAL",
+            "ALTER TABLE clients ADD COLUMN net_capital         REAL",
+            # Group lookups by (PAN, ws_account_code) — one PAN can have
+            # many accounts; this powers fast account-level match in the
+            # backfill engines and the registry's PAN-grouped display.
+            "CREATE INDEX IF NOT EXISTS idx_clients_pan_acct "
+            "ON clients(tax_pan, ws_account_code)",
         ]
         for stmt in _migrations:
             try:
@@ -630,7 +644,6 @@ def send_client_pending_email(client: dict, recipients: list, ingestor) -> dict:
         "<div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto'>"
         "<div style='background:#0b1929;padding:20px;border-bottom:3px solid #c9a84c'>"
         "<span style='color:#c9a84c;font-size:18px;font-weight:700'>Keystone</span>"
-        "<span style='color:#fff;font-size:14px;margin-left:8px'>by GoldStandard</span>"
         "</div>"
         "<div style='padding:24px;background:#f9f9f9'>"
         "<h2 style='color:#0b1929;margin:0 0 4px'>New Client Pending Authorization</h2>"

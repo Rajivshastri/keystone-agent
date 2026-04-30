@@ -468,11 +468,30 @@ class BankVsWSReconEngine:
             pass   # pools_hub.json not available — fall back to pool master only
 
         # ── Step 2: Classify custodian accounts ───────────────────────────
+        # Operator-managed exclusions (Recon Configuration): accounts on
+        # this list are dropped before classification so they never
+        # surface as breaks. Reads JSON each call so an admin-UI save
+        # takes effect on the next recon, no restart.
+        try:
+            from core.recon_exclusions import is_bank_account_excluded
+        except Exception:
+            is_bank_account_excluded = lambda *a, **kw: False
+
         pool_accounts = {}   # (bank, mapid) -> BankAccount
         artificial    = {}   # bank -> [BankAccount]
 
         for ca in custodian_accounts:
             bank  = ca.source.upper()
+            # Bank-side exclusion check — handle both possible identifier
+            # shapes (account_no for ICICI/Kotak, pool prefix string for
+            # Axis/HDFC). c_group / zip_alias are optional attrs.
+            cust_short = bank.lower()
+            _cg = getattr(ca, 'c_group', '') or ''
+            _za = getattr(ca, 'zip_alias', '') or ''
+            if is_bank_account_excluded(cust_short, ca.account_no) \
+               or (_cg and is_bank_account_excluded(cust_short, _cg)) \
+               or (_za and is_bank_account_excluded(cust_short, _za)):
+                continue   # silently skip — operator opted out via UI
             mapid = self._resolve_cust_mapid(ca, bank, pool_master, icici_pool_map,
                                              client_bank_details=client_bank_details,
                                              kotak_pool_map=kotak_pool_map or {},
@@ -786,18 +805,29 @@ class BankVsWSReconEngine:
         # Only create ws_only rows for MAPIDs with NO matched custodian pool at all.
         all_matched_mapids = {mapid for _, mapid in matched_keys}
 
+        # WS-side exclusions — same operator UI as the bank-side list.
+        # Drops mapins that should never produce ws_only break rows
+        # (e.g. parent / aggregator pools tracked in BankBook but not
+        # reconciled at the pool level).
+        try:
+            from core.recon_exclusions import is_ws_pool_excluded
+        except Exception:
+            is_ws_pool_excluded = lambda *a, **kw: False
+
         # Group unmatched WS entries by MAPID (not by bank+mapid) so we get
         # ONE row per strategy rather than one row per investor bank.
         from collections import defaultdict as _dd5
         _ws_only_by_mapid: dict = _dd5(lambda: {'banks': set(), 'accounts': [], 'ws_sum': 0.0})
         for (bank, mapid), ws_accts in ws_by_pool.items():
-            if mapid not in all_matched_mapids:
-                # This MAPID has no custodian pool anywhere — truly unmatched
-                entry = _ws_only_by_mapid[mapid]
-                entry['banks'].add(bank)
-                entry['accounts'].extend(a.ws_account for a in ws_accts)
-                entry['ws_sum'] = round(entry['ws_sum'] + sum(a.closing_balance for a in ws_accts), 2)
-            # else: MAPID IS matched — these WS accounts are already in the pool row; skip
+            if mapid in all_matched_mapids:
+                continue   # already counted in matched pool row
+            if is_ws_pool_excluded(mapid):
+                continue   # operator opted out via Recon Configuration
+            # This MAPID has no custodian pool anywhere — truly unmatched
+            entry = _ws_only_by_mapid[mapid]
+            entry['banks'].add(bank)
+            entry['accounts'].extend(a.ws_account for a in ws_accts)
+            entry['ws_sum'] = round(entry['ws_sum'] + sum(a.closing_balance for a in ws_accts), 2)
 
         for mapid, entry in _ws_only_by_mapid.items():
             banks_str = '/'.join(sorted(entry['banks']))
