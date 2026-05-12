@@ -14,9 +14,14 @@ Usage:
   hub.mappings_dict()            # compatible with old mappings.json format
   hub.bank_pool_map('icici')     # compatible with old *_bank_pool_map.json
   hub.ws_scheme_names_index()    # {scheme_name_lower: mapin}
+
+Hierarchy (added for Pool Creation workflow — one IA → many Schemes → many Pools):
+  hub.investment_approaches()    # [{ia_code, ia_name, ia_no}]
+  hub.schemes()                  # [{scheme_name, ia_code, start_date, fund_manager, strategy}]
+  hub.pools                      # existing; each pool gets new {ia_code, scheme_name} link keys
 """
 from __future__ import annotations
-import json, os, logging
+import json, os, logging, tempfile
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -24,25 +29,45 @@ logger = logging.getLogger(__name__)
 
 
 class PoolsHub:
-    def __init__(self, pools: List[dict], brokers: List[dict] = None):
+    def __init__(self, pools: List[dict],
+                 brokers: List[dict] = None,
+                 investment_approaches: List[dict] = None,
+                 schemes: List[dict] = None,
+                 source_path: Optional[Path] = None,
+                 raw: Optional[dict] = None):
         self._pools = pools
         self._brokers = brokers or []
+        self._ias = investment_approaches or []
+        self._schemes = schemes or []
+        # Remembered so save() can round-trip to the same file we loaded from,
+        # and preserve any top-level metadata (_schema_version, _comment, …).
+        self._source_path = source_path
+        self._raw = raw or {}
 
     # ── Loading ──────────────────────────────────────────────────────────── #
 
     @classmethod
     def load(cls, path: str = None, broker_path: str = None) -> 'PoolsHub':
-        # pools_hub.json — always present, authoritative for pool records
         if path is None:
-            path = Path(__file__).parent.parent / 'config' / 'pools_hub.json'
+            # Honor KEYSTONE_CONFIG_DIR so UI edits made on Azure (which land
+            # in /home/keystone-config/pools_hub.json) are seen by loaders.
+            # Falls back to the bundled config/ dir for local dev.
+            _cfg_dir = os.environ.get('KEYSTONE_CONFIG_DIR')
+            if _cfg_dir:
+                path = Path(_cfg_dir) / 'pools_hub.json'
+            else:
+                path = Path(__file__).parent.parent / 'config' / 'pools_hub.json'
         with open(path) as f:
             data = json.load(f)
         pools = data.get('pools', [])
+        ias     = data.get('investment_approaches', []) or []
+        schemes = data.get('schemes', []) or []
 
-        # broker_map.json — now also the home of broker-side CN aliases.
-        # Optional so existing callers still work on boxes mid-migration.
+        # broker_map.json — aliases now live under broker.pool_aliases.
+        # Load it from the same directory as pools_hub.json (honors
+        # KEYSTONE_CONFIG_DIR on Azure).
         if broker_path is None:
-            broker_path = Path(__file__).parent.parent / 'config' / 'broker_map.json'
+            broker_path = Path(path).parent / 'broker_map.json'
         brokers: List[dict] = []
         try:
             with open(broker_path) as f:
@@ -52,7 +77,11 @@ class PoolsHub:
         except Exception as e:
             logger.warning(f"Failed to load broker_map.json: {e}")
 
-        return cls(pools, brokers)
+        return cls(pools, brokers,
+                   investment_approaches=ias,
+                   schemes=schemes,
+                   source_path=Path(path),
+                   raw=data)
 
     @property
     def brokers(self) -> List[dict]:
@@ -107,6 +136,29 @@ class PoolsHub:
             if p.get('canonical_mapin'):
                 entry['canonical_mapin'] = p['canonical_mapin']
             entries.append(entry)
+
+        # Dealer-account aliases — same pool, alternative account string
+        # in the dealer file. Emitted as extra entries so the engine's
+        # dealer_account.upper() index resolves either spelling. Common
+        # case: dealer file uses both a short code and a display name
+        # for the same strategy (e.g. 'GSWP_57FORWARD' and
+        # 'GoldStandard 57Forward Diversi').
+        for p in self._pools:
+            if not p.get('mapin'):
+                continue
+            for alias in (p.get('dealer_account_aliases') or []):
+                alias = (alias or '').strip()
+                if not alias:
+                    continue
+                entries.append({
+                    'dealer_account':  alias,
+                    'mapin':           p['mapin'],
+                    'pool_name':       p.get('display_name', ''),
+                    'scheme_name':     p.get('custodian_code', ''),
+                    'custodian':       p.get('custodian_bank', ''),
+                    'ws_scheme_names': p.get('ws_scheme_names', []),
+                    'canonical_mapin': p['mapin'],
+                })
 
         # Broker-side pool aliases (e.g. GSWP012 → aristos_hdfc) emit one
         # synthesized entry per alias so TradeReconEngine can resolve alt
@@ -256,3 +308,269 @@ class PoolsHub:
                 if parent and parent.get('mapin'):
                     return parent['mapin']
         return alias_mapin
+
+    # ── Investment Approach / Scheme hierarchy (Pool Creation workflow) ──── #
+
+    def investment_approaches(self) -> List[dict]:
+        return self._ias
+
+    def schemes(self) -> List[dict]:
+        return self._schemes
+
+    def ia_by_code(self, ia_code: str) -> Optional[dict]:
+        if not ia_code:
+            return None
+        target = ia_code.strip().upper()
+        for ia in self._ias:
+            if (ia.get('ia_code') or '').strip().upper() == target:
+                return ia
+        return None
+
+    def ia_by_name(self, ia_name: str) -> Optional[dict]:
+        if not ia_name:
+            return None
+        target = ia_name.strip().lower()
+        for ia in self._ias:
+            if (ia.get('ia_name') or '').strip().lower() == target:
+                return ia
+        return None
+
+    def schemes_for_ia(self, ia_code: str) -> List[dict]:
+        target = (ia_code or '').strip().upper()
+        return [s for s in self._schemes
+                if (s.get('ia_code') or '').strip().upper() == target]
+
+    def scheme_in_ia(self, ia_code: str, scheme_name: str) -> Optional[dict]:
+        ia_target = (ia_code or '').strip().upper()
+        nm_target = (scheme_name or '').strip().lower()
+        for s in self._schemes:
+            if ((s.get('ia_code') or '').strip().upper() == ia_target
+                    and (s.get('scheme_name') or '').strip().lower() == nm_target):
+                return s
+        return None
+
+    def pools_for_scheme(self, ia_code: str, scheme_name: str) -> List[dict]:
+        ia_target = (ia_code or '').strip().upper()
+        nm_target = (scheme_name or '').strip().lower()
+        out = []
+        for p in self._pools:
+            if ((p.get('ia_code') or '').strip().upper() == ia_target
+                    and (p.get('scheme_name') or '').strip().lower() == nm_target):
+                out.append(p)
+        return out
+
+    def next_ia_seq(self) -> int:
+        """Next sequence for a newly-created IA. Max existing + 1, else 1."""
+        seqs = [int(ia.get('ia_no') or 0) for ia in self._ias]
+        return (max(seqs) if seqs else 0) + 1
+
+    # ── Upserts + atomic save ────────────────────────────────────────────── #
+
+    def upsert_ia(self, ia: dict) -> dict:
+        """Add or update an Investment Approach by ia_code. Returns the stored row."""
+        code = (ia.get('ia_code') or '').strip().upper()
+        if not code:
+            raise ValueError("upsert_ia requires ia_code")
+        for i, existing in enumerate(self._ias):
+            if (existing.get('ia_code') or '').strip().upper() == code:
+                merged = {**existing, **ia, 'ia_code': code}
+                self._ias[i] = merged
+                return merged
+        row = {**ia, 'ia_code': code}
+        self._ias.append(row)
+        return row
+
+    def upsert_scheme(self, scheme: dict) -> dict:
+        """Add or update a Scheme by (ia_code, scheme_name). Returns the stored row."""
+        ia_code = (scheme.get('ia_code') or '').strip().upper()
+        nm      = (scheme.get('scheme_name') or '').strip()
+        if not ia_code or not nm:
+            raise ValueError("upsert_scheme requires ia_code and scheme_name")
+        nm_key = nm.lower()
+        for i, existing in enumerate(self._schemes):
+            if ((existing.get('ia_code') or '').strip().upper() == ia_code
+                    and (existing.get('scheme_name') or '').strip().lower() == nm_key):
+                merged = {**existing, **scheme, 'ia_code': ia_code, 'scheme_name': nm}
+                self._schemes[i] = merged
+                return merged
+        row = {**scheme, 'ia_code': ia_code, 'scheme_name': nm}
+        self._schemes.append(row)
+        return row
+
+    def upsert_pool(self, pool: dict) -> dict:
+        """Add or update a pool by pool_id. Returns the stored row."""
+        pid = (pool.get('pool_id') or '').strip()
+        if not pid:
+            raise ValueError("upsert_pool requires pool_id")
+        for i, existing in enumerate(self._pools):
+            if (existing.get('pool_id') or '').strip() == pid:
+                merged = {**existing, **pool, 'pool_id': pid}
+                self._pools[i] = merged
+                return merged
+        row = {**pool, 'pool_id': pid}
+        self._pools.append(row)
+        return row
+
+    def remove_pool(self, pool_id: str) -> bool:
+        pid = (pool_id or '').strip()
+        for i, p in enumerate(self._pools):
+            if (p.get('pool_id') or '').strip() == pid:
+                self._pools.pop(i)
+                return True
+        return False
+
+    # ── Fund Manager emails ──────────────────────────────────────────────── #
+    #
+    # Each pool / scheme references a fund manager by name (the WS-side
+    # picklist label). When the welcome email fires after authorize-ws
+    # we need the FM's email for the Cc list, but the pool record only
+    # carries the name. Store a flat ``{name: email}`` dict at the top
+    # level of pools_hub.json under ``fund_manager_emails`` — operator
+    # maintains it via Settings → Fund Managers.
+
+    def fund_manager_email(self, name: str) -> str:
+        """Look up a fund manager's email by name (case-insensitive).
+        Returns '' when no email is configured — caller should treat
+        as 'no Cc' rather than failing the send."""
+        if not name:
+            return ''
+        emails = (self._raw.get('fund_manager_emails') or {})
+        if not isinstance(emails, dict):
+            return ''
+        # Case-insensitive lookup so an operator typing 'sanjoy
+        # bhattacharyya' matches an entry stored as 'Sanjoy Bhattacharyya'.
+        target = name.strip().lower()
+        for k, v in emails.items():
+            if (k or '').strip().lower() == target:
+                return (v or '').strip()
+        return ''
+
+    def fund_manager_emails(self) -> dict:
+        """Return the full {name: email} dict for the Settings UI."""
+        emails = (self._raw.get('fund_manager_emails') or {})
+        if not isinstance(emails, dict):
+            return {}
+        return {(k or '').strip(): (v or '').strip()
+                for k, v in emails.items() if (k or '').strip()}
+
+    def set_fund_manager_emails(self, emails: dict) -> None:
+        """Replace the fund-manager-emails dict. Saved on next ``save()``."""
+        cleaned: dict = {}
+        for k, v in (emails or {}).items():
+            name  = (k or '').strip()
+            email = (v or '').strip()
+            if not name:
+                continue
+            cleaned[name] = email
+        self._raw['fund_manager_emails'] = cleaned
+
+    # ── Firm-wide bank accounts to exclude from recon ────────────────────── #
+    #
+    # Custodians like HDFC, Axis often hold a master / aggregator account in
+    # the firm's name in addition to per-pool accounts. The aggregator
+    # appears on the daily balance file but doesn't map to any pool, so its
+    # closing balance has no WS counterpart and bank recon flags it as a
+    # spurious break (or "NOT IN WS"). Operator marks those accounts here
+    # and the bank-recon engine skips them — no recon row, no history
+    # write, no opening-balance carry-over.
+    #
+    # Stored at the top level of pools_hub.json under
+    # ``excluded_bank_accounts``: a list of {bank, account, note} dicts.
+    # Account numbers alone are unique within and across banks, so
+    # downstream callers may take just the account string set.
+
+    def excluded_bank_accounts(self) -> List[str]:
+        """Return account-number strings (no bank prefix) for every entry
+        in the excluded list. Trims whitespace; drops blanks. Used by the
+        bank-recon engine and bank_balance_history to filter out firm-wide
+        accounts before they touch any reconciliation surface."""
+        rows = self._raw.get('excluded_bank_accounts') or []
+        out: List[str] = []
+        for r in rows:
+            if isinstance(r, dict):
+                acct = (r.get('account') or '').strip()
+            elif isinstance(r, str):
+                acct = r.strip()
+            else:
+                continue
+            if acct:
+                out.append(acct)
+        return out
+
+    def excluded_bank_accounts_full(self) -> List[dict]:
+        """Return the rich shape ``[{bank, account, note}, ...]`` for the
+        operator UI. Defensive against legacy config files that stored
+        bare strings — those get promoted to dicts with empty bank/note."""
+        rows = self._raw.get('excluded_bank_accounts') or []
+        out: List[dict] = []
+        for r in rows:
+            if isinstance(r, dict):
+                out.append({
+                    'bank':    (r.get('bank') or '').strip().upper(),
+                    'account': (r.get('account') or '').strip(),
+                    'note':    (r.get('note') or '').strip(),
+                })
+            elif isinstance(r, str) and r.strip():
+                out.append({'bank': '', 'account': r.strip(), 'note': ''})
+        return out
+
+    def set_excluded_bank_accounts(self, rows: List[dict]) -> None:
+        """Replace the excluded-accounts list. Persisted on the next
+        ``save()``. Each row is normalised to ``{bank, account, note}``;
+        blanks are dropped, duplicates collapsed (account-number is the
+        dedupe key)."""
+        seen = set()
+        cleaned: List[dict] = []
+        for r in rows or []:
+            if not isinstance(r, dict):
+                continue
+            acct = (r.get('account') or '').strip()
+            if not acct or acct in seen:
+                continue
+            seen.add(acct)
+            cleaned.append({
+                'bank':    (r.get('bank') or '').strip().upper(),
+                'account': acct,
+                'note':    (r.get('note') or '').strip(),
+            })
+        self._raw['excluded_bank_accounts'] = cleaned
+
+    def save(self, path: Optional[str] = None) -> Path:
+        """Atomically write the hub back to disk.
+
+        Writes to a sibling tempfile then renames — prevents torn JSON if the
+        process dies mid-write. Preserves any top-level _schema_version /
+        _comment keys from the original file.
+        """
+        target = Path(path) if path else self._source_path
+        if target is None:
+            raise ValueError("No path known for this PoolsHub — pass path=")
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        data = dict(self._raw)  # shallow copy of original top-level keys
+        data['investment_approaches'] = self._ias
+        data['schemes'] = self._schemes
+        data['pools'] = self._pools
+
+        # atomic rename: write to a temp file in the same dir, then os.replace
+        fd, tmp = tempfile.mkstemp(prefix='.pools_hub.', suffix='.json.tmp',
+                                   dir=str(target.parent))
+        try:
+            # encoding='utf-8' is mandatory: pool notes / display names
+            # routinely contain U+2014 (em-dash) and U+2192 (right-arrow)
+            # which crash json.dump on Windows where the default text
+            # encoding is cp1252.
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.write('\n')
+            os.replace(tmp, target)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+        self._source_path = target
+        self._raw = data
+        return target

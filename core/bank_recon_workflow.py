@@ -12,21 +12,38 @@ import re as _re
 from datetime import datetime, timedelta
 from pathlib import Path
 
+
 logger = logging.getLogger(__name__)
 
 
-def _derive_buy_totals_from_0096(out_dir: Path) -> dict:
+def _derive_buy_totals_from_0096(out_dir: Path) -> dict[str, float]:
     """Aggregate BUY rows from the latest 0096 file by MapinID into
     per-pool cash debit totals.
 
-    Mirrors flask's helper. When CP gains a way to flag "today's
-    trade dispatch was NSDL" (e.g. via job payload field), agent's
-    workflow can call this and pass the result as
-    equity_buy_by_mapid to BankVsWSReconEngine.reconcile so buy-side
-    cash-flow timing variances surface as Settlement Timing instead
-    of Balance Break. Today the agent doesn't track per-day dispatch
-    type, so the helper is provided but not wired — kept here for
-    source-code parity with the flask side.
+    Used by bank recon when the day's trade dispatch was the NSDL
+    CNSTAT file (mapid=195). NSDL has no CashsettlementDate column, so
+    WS Bank Book records buy cash on T+1 instead of T — but the
+    custodian bank statement still shows the debit on T (custodian
+    pre-funded). The variance per pool on day T equals the day's BUY
+    cash for that pool. Surfacing it as `equity_buy_pending` lets
+    PoolReconResult.overall_status reclassify the would-be Balance
+    Break as Settlement Timing.
+
+    Cash impact per BUY row mirrors what WS Bank Book will eventually
+    book on T+1:
+        cash = (price + brokerage_per_share + service_tax_per_share
+                + accrued_interest_per_unit) * quantity
+              + stt + stamp_duty
+
+    Reads both .xlsx (openpyxl) and .xls (xlrd) — trade_recon_workflow
+    currently writes the dispatch file as .xls via xlwt, which openpyxl
+    cannot read; previously the bare except below silently returned {}
+    on every NSDL day, killing the Settlement Timing reclassification
+    this helper exists for.
+
+    Returns {} when no 0096 file is present (the caller treats this as
+    "no NSDL adjustment to apply" — bank recon then proceeds with the
+    existing Settlement Timing logic only on mf_orders_pending).
     """
     if not out_dir.exists():
         return {}
@@ -35,9 +52,11 @@ def _derive_buy_totals_from_0096(out_dir: Path) -> dict:
         return {}
     latest = max(cands, key=lambda p: p.stat().st_mtime)
 
-    # Reads both .xlsx (openpyxl) and .xls (xlrd) — the trade-recon
-    # workflow writes the dispatch file as .xls, which openpyxl cannot
-    # read. Same fix applied flask-side.
+    # Column layout from the 0096 writer (0-based):
+    #   E=4 TransactionType, H=7 Quantity, I=8 Price,
+    #   J=9 BrokeragePerShare, K=10 ServiceTaxPerShare,
+    #   P=15 SecurityTransactionTax, Q=16 AccruedInterestPerUnit,
+    #   R=17 MapinID, U=20 StampDuty
     def _rows_xlsx(path: Path):
         try:
             import openpyxl as _ox
@@ -69,7 +88,7 @@ def _derive_buy_totals_from_0096(out_dir: Path) -> dict:
         logger.warning(f'_derive_buy_totals_from_0096: no reader available for {latest}')
         return {}
 
-    totals: dict = {}
+    totals: dict[str, float] = {}
     try:
         for r in rows_iter:
             if not r or len(r) < 21:
@@ -151,7 +170,7 @@ def run_bank_recon(date_str: str, fm, sources: list, password: str,
         fm:           FileManager instance.
         sources:      Parsed sources.json list.
         password:     Zip/file password for HDFC, Axis, Kotak.
-        bank_history: Prior-day closing balances dict (from _load_bank_balance_history).
+        bank_history: Prior-day closing balances dict (from core.bank_balance_history.load).
         log_fn:       Callable(msg) for logging (also receives to app log).
         bank_dates:   List of dates to load bank statements from (inclusive).
                       Covers non-working days between previous working day and
@@ -419,6 +438,18 @@ def run_bank_recon(date_str: str, fm, sources: list, password: str,
 
     if strategy_bals:
         axis_parser = AxisBankParser()
+        # Valid transaction dates for Axis: only the txn-date range
+        # (day after prev WD through recon day). Same Kotak-style allowlist.
+        # Axis sometimes ships transaction files whose CONTENT covers more
+        # than a single day — e.g. across a long weekend the Monday file
+        # can include the prior Thursday's transactions, which would
+        # otherwise be double-counted (they were already recon'd that
+        # Thursday). Filtering by tran_date confines us to the post-prev-WD
+        # window regardless of what the file content carries.
+        _axis_valid_txn_dates = {
+            datetime.strptime(d, '%Y-%m-%d').strftime('%d-%b-%Y').upper()
+            for d in _txn_dates
+        }
         for prefix in sorted(strategy_bals):
             bal_zips = sorted(strategy_bals[prefix])   # chronological by filename
             txn_zips = sorted(strategy_txns.get(prefix, []))
@@ -456,10 +487,16 @@ def run_bank_recon(date_str: str, fm, sources: list, password: str,
                 if acct.account_no in opening_by_acct:
                     acct.opening_balance    = opening_by_acct[acct.account_no]
                     acct.has_opening_balance = True
-                # Dedup transactions across all days
-                acct.transactions = _dedup_txns(
+                # Dedup transactions across all days, then filter to the
+                # valid txn-date window — drops any pre-prev-WD txns the
+                # file content might carry over (the bug operators hit
+                # 2026-05-05: 30-Apr txns showing up in the 4-May recon
+                # because the 4-May Axis file straddled the long weekend).
+                _all_axis = _dedup_txns(
                     _axis_txns.get(acct.account_no, []),
                     _axis_fmax.get(acct.account_no, {}))
+                acct.transactions = [t for t in _all_axis
+                                     if (t.tran_date or '').upper() in _axis_valid_txn_dates]
 
             custodian_accounts.extend(r.accounts)
             day_count = len(set(Path(t).parent.name for t in txn_zips)) if txn_zips else 0
@@ -583,6 +620,25 @@ def run_bank_recon(date_str: str, fm, sources: list, password: str,
             parse_log,
         )
 
+    # ── Drop firm-wide / excluded accounts ───────────────────────────────── #
+    # Operator-curated set of bank account numbers that must never enter
+    # reconciliation (e.g. the firm's master custody-aggregator account
+    # at HDFC / Axis). Filtering here means the engine never sees them,
+    # they don't show up in the report, they never get persisted to
+    # bank_balance_history, and they can't seed an opening balance.
+    try:
+        _excluded = set(PoolsHub.load().excluded_bank_accounts())
+    except Exception as _e:
+        plog(f'Excluded-account list unavailable: {_e}')
+        _excluded = set()
+    if _excluded:
+        _kept = [a for a in custodian_accounts if a.account_no not in _excluded]
+        _dropped = len(custodian_accounts) - len(_kept)
+        if _dropped:
+            plog(f'Excluded {_dropped} firm-wide account(s) from recon: '
+                 f'{sorted(a.account_no for a in custodian_accounts if a.account_no in _excluded)}')
+        custodian_accounts = _kept
+
     plog(f'Total custodian accounts loaded: {len(custodian_accounts)}')
 
     # ── WS Bank Book ─────────────────────────────────────────────────────── #
@@ -689,6 +745,41 @@ def run_bank_recon(date_str: str, fm, sources: list, password: str,
     # explanation feature in the bank recon UI.
     _mf_orders_by_mapid: dict = {}
 
+    # Equity-buy cash-flow timing flag. When the day's trade dispatch
+    # was NSDL (CNSTAT file via mapid=195), WS Bank Book records the
+    # buy cash flow on T+1 because NSDL has no CashsettlementDate
+    # column. The bank statement still shows the debit on T (custodian
+    # pre-funded). On day-T's recon that produces a one-day-ahead
+    # variance equal to the buy cash. We derive that per-pool total
+    # from the 0096 file's BUY rows so PoolReconResult.overall_status
+    # can reclassify the variance as Settlement Timing instead of
+    # Balance Break.
+    #
+    # When dispatch was 0096 (the default with CashsettlementDate
+    # populated), WS Bank Book has cash on T already and bank
+    # statement matches — no equity_buy adjustment needed.
+    _equity_buy_by_mapid: dict = {}
+    try:
+        from core import eod_log as _el
+        _eod = _el.load(fm.base_dir, date_str)
+        _trade_step = (_eod or {}).get('trade_upload') or {}
+        _dispatch_type = str(_trade_step.get('dispatch_type', '')).lower()
+        if _dispatch_type == 'nsdl':
+            _out_dir = Path(fm.base_dir) / 'data' / date_str / 'output'
+            _equity_buy_by_mapid = _derive_buy_totals_from_0096(_out_dir)
+            if _equity_buy_by_mapid:
+                _total = sum(_equity_buy_by_mapid.values())
+                log_fn(f"Trade dispatch on {date_str} was NSDL — derived "
+                       f"buy-cash totals for {len(_equity_buy_by_mapid)} "
+                       f"pool(s) (₹{_total:,.2f}) from 0096; will surface "
+                       f"as Settlement Timing where the variance matches.")
+            else:
+                log_fn(f"Trade dispatch on {date_str} was NSDL but no 0096 "
+                       f"file found — buy-side timing variance (if any) "
+                       f"will surface as Balance Break.")
+    except Exception as _e:
+        log_fn(f"WARN: dispatch-type lookup failed: {_e}")
+
     # ── Layer 0: custodian internal balance check ─────────────────────────  #
     balance_engine  = BankBalanceEngine()
     balance_summary = balance_engine.reconcile(custodian_accounts, date_str)
@@ -714,6 +805,7 @@ def run_bank_recon(date_str: str, fm, sources: list, password: str,
         bank_balance_history = _cust_history,
         ws_opening_history   = _ws_history,
         mf_orders_by_mapid   = _mf_orders_by_mapid,
+        equity_buy_by_mapid  = _equity_buy_by_mapid,
         date                 = date_str,
         bank_tolerance_rs    = bank_tolerance_rs,
     )

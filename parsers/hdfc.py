@@ -77,9 +77,16 @@ class HDFCParser(BaseParser):
                 # Skip non-data rows (empty, total rows, etc.)
                 if not client_code or not isin or len(isin) < 5:
                     continue
-                # Previously: `if not client_code.startswith(broker_code[:2]):`
-                # silently dropped multi-strategy / cross-prefix files.
-                # The empty / short-ISIN checks above are sufficient.
+                # Previously: `if not client_code.startswith(broker_code[:2]): continue`
+                # — silently dropped any client whose code didn't share the
+                # first 2 chars with broker_code, which broke on multi-
+                # strategy HDFC files and on strategies whose client codes
+                # don't share a prefix with the broker (e.g. GWPCMP broker
+                # with GP*-prefixed clients). The empty / short-ISIN
+                # checks above are sufficient to skip totals and headers.
+                # If a wrong-broker row sneaks through, it'll fail to
+                # match in the recon engine and surface as "custody only"
+                # — visible to the operator, not silent drift.
 
                 logical  = self.clean_number(cells[COL_BOOK_POS])
                 saleable = self.clean_number(cells[COL_TOTAL_SALE])

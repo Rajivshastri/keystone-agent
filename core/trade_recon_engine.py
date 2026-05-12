@@ -772,9 +772,12 @@ class TradeReconEngine:
             # parsed set but under a different broker code. Resolve dealer
             # mapin to its canonical form so alias entries collapse, then
             # look up by (canonical_mapin, isin, side) only.
-            # Apply the same 1% qty-proximity filter Pass 3 uses;
-            # otherwise multi-broker CNs aggregate into a single dealer
-            # match → false QTY_BREAK.
+            #
+            # Apply the same 1% qty-proximity filter Pass 3 uses, otherwise
+            # multiple brokers' CNs for the same pool/ISIN/side aggregate
+            # together → inflated cn_qty → false QTY_BREAK on matched
+            # rows. Pass 3 always filters; Pass 4 used to return every
+            # CN in the bucket unfiltered.
             canon_mapin = _canonical_ucc(ucc)
             cns = cn_pool_isin.get((canon_mapin, isin, side), [])
             if cns:

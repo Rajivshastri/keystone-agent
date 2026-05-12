@@ -119,14 +119,14 @@ class FileManager:
         if not d.exists():
             return []
         _ts_rx = _re_ts.compile(r'_(\d{8}T\d{6})$')
-        grouped = {}
+        grouped = {}  # (logical_stem, suffix_lower) -> (sort_key, Path)
         for p in d.iterdir():
             if not p.is_file():
                 continue
             m = _ts_rx.search(p.stem)
             if m:
                 logical_stem = p.stem[:m.start()]
-                sort_key = (1, m.group(1))
+                sort_key = (1, m.group(1))  # prefer filename-tagged newer
             else:
                 logical_stem = p.stem
                 try:
@@ -651,10 +651,12 @@ class FileManager:
                 'basename':   name,
                 'fetched_at': ts,
                 'row_count':  row_count,
-                'is_latest':  False,
+                'is_latest':  False,   # set below
             })
 
-        # Latest = most recent fetched_at (YYYYMMDDTHHMMSS sorts lex).
+        # Latest = most recent fetched_at (lex-sorted on the timestamp
+        # works because YYYYMMDDTHHMMSS is monotonic). Fall back to
+        # filename order when timestamps tie / are missing.
         out.sort(key=lambda e: (e['fetched_at'], e['basename']), reverse=True)
         if out:
             out[0]['is_latest'] = True
@@ -730,9 +732,10 @@ class FileManager:
         _dealer_all = sorted([str(p) for p in _dd.iterdir()
                                if p.is_file() and p.suffix.lower() in ('.xlsx','.xls','.csv')]
                              ) if _dd.exists() else []
-        # Per-file metadata for the multi-grid selector (only meaningful
-        # when len(_dealer_all) > 1 — UI hides the picker for the
-        # single-file case).
+        # Detailed dealer-file list (path + fetched_at + row_count) so
+        # the trade recon UI can render a multi-file picker. The
+        # operator chooses which grids to include for the recon run —
+        # additive on multi-grid days, replacement on correction days.
         dealer_list = self.list_dealer_files(date_str)
         return {
             'ws_trade_trans': {'present': bool(ws_tt),  'path': ws_tt  or '', 'label': 'Z13_OrderLog (WS Orders)'},

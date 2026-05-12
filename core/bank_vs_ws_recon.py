@@ -40,7 +40,11 @@ _TXN_NOISE = 0.05
 
 
 def _round2_zero(x) -> bool:
-    """True when x rounds to ₹0.00 at paise precision."""
+    """True when x rounds to ₹0.00 at paise precision — i.e. effectively
+    zero at the precision the UI displays. Replaces the legacy 0.05
+    tolerance that conflated 'rounding noise' with 'small but real
+    break'.
+    """
     try:
         return round(abs(float(x or 0.0)), 2) == 0.0
     except (TypeError, ValueError):
@@ -468,10 +472,10 @@ class BankVsWSReconEngine:
             pass   # pools_hub.json not available — fall back to pool master only
 
         # ── Step 2: Classify custodian accounts ───────────────────────────
-        # Operator-managed exclusions (Recon Configuration): accounts on
-        # this list are dropped before classification so they never
-        # surface as breaks. Reads JSON each call so an admin-UI save
-        # takes effect on the next recon, no restart.
+        # Operator-managed exclusions (Settings → Recon Configuration):
+        # accounts on this list are dropped before classification so they
+        # never surface as breaks. Reads the JSON each call so a save
+        # via the admin UI takes effect on the next recon, no restart.
         try:
             from core.recon_exclusions import is_bank_account_excluded
         except Exception:
@@ -820,7 +824,7 @@ class BankVsWSReconEngine:
         _ws_only_by_mapid: dict = _dd5(lambda: {'banks': set(), 'accounts': [], 'ws_sum': 0.0})
         for (bank, mapid), ws_accts in ws_by_pool.items():
             if mapid in all_matched_mapids:
-                continue   # already counted in matched pool row
+                continue   # already counted in matched pool row above
             if is_ws_pool_excluded(mapid):
                 continue   # operator opted out via Recon Configuration
             # This MAPID has no custodian pool anywhere — truly unmatched
@@ -828,6 +832,7 @@ class BankVsWSReconEngine:
             entry['banks'].add(bank)
             entry['accounts'].extend(a.ws_account for a in ws_accts)
             entry['ws_sum'] = round(entry['ws_sum'] + sum(a.closing_balance for a in ws_accts), 2)
+            # else: MAPID IS matched — these WS accounts are already in the pool row; skip
 
         for mapid, entry in _ws_only_by_mapid.items():
             banks_str = '/'.join(sorted(entry['banks']))

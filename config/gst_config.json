@@ -1,0 +1,9 @@
+{
+  "_note": "Firm-level GST defaults consumed by core/gst_setup.py when building the per-client GST upload xlsx (mapid=1033). Edit these values directly when the GST registration changes.",
+  "firm_gstin": "27AALCG4181G1ZF",
+  "firm_state_code": "MH",
+  "service_location_id": 1,
+  "fee_type": "*",
+  "valid_from_default": "2025-10-10",
+  "_valid_from_note": "ISO YYYY-MM-DD. When building a GST row for a new client this is the VALIDFROM applied. Override per call if needed (e.g. backdating)."
+}

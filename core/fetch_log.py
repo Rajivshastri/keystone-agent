@@ -18,18 +18,26 @@ Each record:
 import json
 import uuid
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Path relative to this file: core/ → parent → data/
-_LOG_PATH = Path(__file__).parent.parent / 'data' / 'email_fetch_log.jsonl'
-
 
 def _log_path() -> Path:
-    return _LOG_PATH
+    """Resolve the fetch-log path, honouring KEYSTONE_DATA_DIR on Azure.
+
+    Falls back to `<repo>/data/email_fetch_log.jsonl` for local source runs
+    where the env var is unset.
+    """
+    root = os.environ.get('KEYSTONE_DATA_DIR') or str(Path(__file__).parent.parent)
+    return Path(root) / 'data' / 'email_fetch_log.jsonl'
+
+
+# Back-compat shim: older callers may have captured the module-level constant.
+_LOG_PATH = _log_path()
 
 
 def record_fetch(trigger: str, user: str,

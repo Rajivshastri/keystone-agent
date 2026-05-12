@@ -41,6 +41,12 @@ def _fmt(d: datetime) -> str:
     return d.strftime("%d/%m/%Y")
 
 
+def _first_of_month(d: datetime) -> datetime:
+    """First day of d's month — used as FROMDATE for period reports
+    that accumulate over the month (e.g. ClientAverageAUM)."""
+    return d.replace(day=1)
+
+
 # ── Backoffice-query masters (mirror-DB source) ─────────────────────────────
 # Discovered via ws_discover_queries.py against the /reportUploadQuery.do
 # menu. Each entry becomes both a REPORTS row and a download_specs entry.
@@ -139,19 +145,54 @@ def _login(session: _requests.Session, auth_cache: Path) -> None:
 
     base = _base_url()
 
-    # Try cached session first
+    # Try cached session first.
+    #
+    # WS Tomcat re-serves the login form at the originally requested URL
+    # (HTTP 200, no redirect) when JSESSIONID has been destroyed by a
+    # concurrent login or session timeout. The previous URL-only check
+    # ("j_spring_security_check" not in url AND "auth.do" not in url)
+    # accepted those responses as valid, after which every downstream
+    # POST landed on the login page and silently no-op'd. The fix is a
+    # POSITIVE marker: the login page contains the j_username /
+    # j_password form fields; an authenticated home page does not.
     if auth_cache.exists():
         try:
             state = json.loads(auth_cache.read_text())
-            cookies = {c["name"]: c["value"] for c in state.get("cookies", [])}
-            if cookies:
-                session.cookies.update(cookies)
+            saved_cookies = state.get("cookies", []) or []
+            if saved_cookies:
+                # Restore each cookie with its FULL attributes (domain,
+                # path, secure) — not as a flat name->value dict. The
+                # plain-dict path silently drops Path, so a cookie that
+                # WS originally set with Path=/fincrm gets restored with
+                # Path=/ (requests' default), which has caused two
+                # downstream bugs: (1) a JSESSIONID@/ that doesn't match
+                # what WS expects on POST, leading to errorCSRF.jsp
+                # bounces; (2) confusion in the JSESSIONID dedupe logic.
+                # Preserve the on-disk shape exactly.
+                for c in saved_cookies:
+                    name = c.get("name")
+                    value = c.get("value")
+                    if not name:
+                        continue
+                    session.cookies.set(
+                        name, value,
+                        domain=c.get("domain") or "",
+                        path=c.get("path") or "/",
+                        secure=bool(c.get("secure", False)),
+                    )
                 r = session.get(f"{base}/", timeout=15, allow_redirects=True)
-                if ("j_spring_security_check" not in r.url and
-                        "auth.do" not in r.url and len(r.text) > 500):
+                _looks_like_login = (
+                    'j_spring_security_check' in r.url or
+                    'auth.do' in r.url or
+                    'name="j_username"' in r.text or
+                    'name="j_password"' in r.text or
+                    'id="loginForm"' in r.text or
+                    len(r.text) <= 500
+                )
+                if not _looks_like_login:
                     log.info("Cached WS session is valid")
                     return
-                log.info("Cached session expired")
+                log.info("Cached session expired (or returned login page)")
                 session.cookies.clear()
         except Exception as e:
             log.warning(f"Could not use cached session: {e}")
@@ -233,9 +274,8 @@ def _fetch(session: _requests.Session, url: str, base: str) -> bytes:
     log.info(f"     Fetching: {full}")
     r = session.get(full, timeout=120)
     r.raise_for_status()
-    # WS returns 200 + HTML for session-expired / form-failed. Don't let
-    # an error page get written as a report file (operator opens the
-    # supposedly-Excel file and gets login HTML).
+    # WS returns 200 + HTML for session-expired / form-failed. Don't let an
+    # error page get written as a report file.
     head = r.content[:8]
     if head[:5].lower() in (b"<html", b"<!doc") or head[:5] == b"<?xml":
         snippet = r.text[:200].strip().replace("\n", " ")
@@ -249,9 +289,15 @@ def _backoffice_url(base: str, date_obj: datetime, query_file: str,
                     catg: str, scope: str, from_date: datetime = None) -> str:
     fd = _fmt(from_date or date_obj)
     td = _fmt(date_obj)
+    # Different WS query templates use different date-field names. The
+    # "static" masters happily accept fromdate=...; ClientAverageAUM's
+    # form uses fdate=... and silently returns 0 bytes when only
+    # fromdate is set. We send both so either convention works without
+    # per-query special-casing.
     return (
         f"{base}/servlet/query?queryfile={query_file}&catg={catg}"
-        f"&fromdate={fd}&todate={td}&begindate={td}"
+        f"&fromdate={fd}&fdate={fd}"
+        f"&todate={td}&tdate={td}&begindate={td}"
         f"&reporttype=excel&scope={scope or ''}&scopeId=0&actactivated=-1"
         f"&txtField1=&txtField2=&txtField3=&txtField4=&txtField5="
     )
@@ -442,6 +488,336 @@ def download_custody_interface(session: _requests.Session, base: str,
 
 # ── Master runner ─────────────────────────────────────────────────────────────
 
+
+def download_daily_aum(from_date: datetime, to_date: datetime,
+                        app_dir: Path, progress_cb=None) -> dict:
+    """Download Clientwise Daily AUM for an arbitrary [from_date, to_date]
+    window. One row per (CLIENTID, ACCOUNTCODE, VALUEDATE) — required
+    by the fee calculator's per-day accrual model (replaces the old
+    Clientwise Average AUM flow whose period-from was based on first
+    capital inflow rather than the bill-group effective date).
+
+    URL: reportUploadQuery.do?queryFileName=Daily_AUM.xml&catg=MISPMS
+         scope=* (Corporate)
+
+    File lands at data/{to_date}/masters/Daily_AUM_{YYYYMMDD-from}_
+    {YYYYMMDD-to}.xls. Auto-refreshes the BillgroupMaster +
+    ClientBillgroupMaster after a successful AUM download (these are
+    the keys the fee calculator joins against; refreshing all three
+    together means one operator click covers the whole compute input).
+
+    Returns {ok, path, size, shape, period_label, from, to, url,
+    billgroup_master, client_billgroup_master} on success or
+    {ok: False, error, url} on failure.
+    """
+    if from_date > to_date:
+        return {'ok': False, 'error': 'from_date must be <= to_date'}
+
+    to_str         = to_date.strftime("%Y-%m-%d")
+    date_masters   = app_dir / "data" / to_str / "masters"
+    auth_cache     = app_dir / "config" / "ws_auth.json"
+    date_masters.mkdir(parents=True, exist_ok=True)
+
+    base = _base_url()
+    period_label = (f"{from_date.strftime('%Y%m%d')}_"
+                    f"{to_date.strftime('%Y%m%d')}")
+    save_path = date_masters / f"Daily_AUM_{period_label}.xls"
+
+    session = _requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "Referer": f"{base}/",
+    })
+
+    if progress_cb:
+        progress_cb("__login__", "running", "Logging in to WealthSpectrum...")
+    try:
+        _login(session, auth_cache)
+    except Exception as e:
+        log.warning(f"WS login failed, retrying with fresh session: {e}")
+        try:
+            auth_cache.unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            _login(session, auth_cache)
+        except Exception as e2:
+            return {'ok': False, 'error': f'login failed: {type(e2).__name__}: {e2}'}
+    if progress_cb:
+        progress_cb("__login__", "ok", "Logged in")
+
+    url = _backoffice_url(base, to_date, "Daily_AUM.xml",
+                          "MISPMS", "*", from_date=from_date)
+    try:
+        if progress_cb:
+            progress_cb("Clientwise Daily AUM", "running",
+                        f"Period {from_date:%d-%b-%Y} to {to_date:%d-%b-%Y}")
+        # Form pre-fetch — sets WS_CSRFTOKEN cookie that the data
+        # endpoint validates. Same dance as download_aum_period.
+        form_url = (f"{base}/reportUploadQuery.do?menuDisp=N"
+                    f"&queryFileName=Daily_AUM.xml"
+                    f"&queryLabel=Clientwise%20Daily%20AUM"
+                    f"&className=&mode2=queryBackOffice&mode=&catg=MISPMS")
+        try:
+            session.get(form_url, timeout=30, allow_redirects=True)
+        except Exception as _form_err:
+            log.warning(f"Daily AUM form pre-fetch failed (continuing): {_form_err}")
+        r = session.get(url, timeout=180, allow_redirects=True)
+        r.raise_for_status()
+        data = r.content
+        save_path.write_bytes(data)
+        kb = len(data) // 1024
+        head = data[:8] if data else b''
+        if not data:
+            shape = 'empty (0 bytes)'
+        elif head.startswith(b'\xd0\xcf\x11\xe0'):
+            shape = 'binary xls (CFBF)'
+        elif head.startswith(b'PK\x03\x04'):
+            shape = 'binary xlsx (zip)'
+        elif head.lstrip().startswith(b'<'):
+            shape = 'HTML (likely auth/error page)'
+        else:
+            shape = f'unknown ({head[:8].hex()})'
+        if progress_cb:
+            progress_cb("Clientwise Daily AUM", "ok",
+                        f"{kb} KB — saved · {shape}")
+        # Auto-chain BillgroupMaster + ClientBillgroupMaster — both
+        # mastered at WS, both required by the fee calculator's join
+        # against (CLIENTID, ACCOUNTCODE) → effective_date. Same
+        # rationale as the old AUM-download chain we're replacing.
+        bg_result: dict = {}
+        cbg_result: dict = {}
+        try:
+            bg_result = download_billgroup_master(app_dir, progress_cb=progress_cb)
+        except Exception as _bg_err:
+            log.warning(f"BillgroupMaster auto-refresh failed: {_bg_err}")
+            bg_result = {'ok': False, 'error': str(_bg_err)}
+        try:
+            cbg_result = download_client_billgroup_master(app_dir, progress_cb=progress_cb)
+        except Exception as _cbg_err:
+            log.warning(f"ClientBillgroupMaster auto-refresh failed: {_cbg_err}")
+            cbg_result = {'ok': False, 'error': str(_cbg_err)}
+        return {'ok': True, 'path': str(save_path), 'size': len(data),
+                'shape': shape,
+                'preview': data[:500].decode('utf-8', errors='replace')
+                            if shape.startswith('HTML') else None,
+                'period_label': period_label,
+                'from': from_date.strftime('%Y-%m-%d'),
+                'to':   to_date.strftime('%Y-%m-%d'),
+                'url':  url,
+                'billgroup_master':         bg_result,
+                'client_billgroup_master':  cbg_result}
+    except Exception as e:
+        import traceback
+        log.error(f"Daily AUM download failed:\n{traceback.format_exc()}")
+        if progress_cb:
+            progress_cb("Clientwise Daily AUM", "error",
+                        f"{type(e).__name__}: {e}")
+        return {'ok': False, 'error': f'{type(e).__name__}: {e}',
+                'url': url}
+
+
+def download_billgroup_master(app_dir: Path, progress_cb=None) -> dict:
+    """Download the Bill Group Master XLS from the WS portal.
+
+    Bill groups classify how a client's account is billed (e.g.
+    'No Charge - GSW', a flat fee tier, a pool-of-funds rate). The
+    master changes rarely — the client creation form needs the current
+    list as a picklist when the operator picks a bill group for a new
+    client. The list isn't part of the daily masters sweep because
+    fee-rate concerns live outside the recon path.
+
+    Persisted to ``masters/BillgroupMaster.xls`` (shared masters, not
+    the date-bucket) since one copy is enough for the whole app.
+
+    Returns ``{ok, path, size, shape}`` on success or
+    ``{ok: False, error, url}`` on failure.
+    """
+    base = _base_url()
+    shared_masters = app_dir / "masters"
+    shared_masters.mkdir(parents=True, exist_ok=True)
+    save_path = shared_masters / "BillgroupMaster.xls"
+    auth_cache = app_dir / "config" / "ws_auth.json"
+
+    session = _requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "Referer": f"{base}/",
+    })
+
+    if progress_cb:
+        progress_cb("__login__", "running", "Logging in to WealthSpectrum...")
+    try:
+        _login(session, auth_cache)
+    except Exception as e:
+        log.warning(f"WS login failed, retrying with fresh session: {e}")
+        try:
+            auth_cache.unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            _login(session, auth_cache)
+        except Exception as e2:
+            return {'ok': False, 'error': f'login failed: {type(e2).__name__}: {e2}'}
+    if progress_cb:
+        progress_cb("__login__", "ok", "Logged in")
+
+    # Bill Group Master is a static report under category=Master. Date is
+    # irrelevant (the master isn't time-sliced), so we use today purely to
+    # satisfy the URL builder's date params.
+    today = datetime.now()
+    url = _backoffice_url(base, today, "BillgroupMaster.xml", "Master", "")
+    try:
+        if progress_cb:
+            progress_cb("Bill Group Master", "running", "Fetching…")
+        # Pre-step: GET the form page so WS sets the WS_CSRFTOKEN cookie.
+        # Same dance as download_aum_period — without this the data endpoint
+        # silently returns an empty body for some templates.
+        form_url = (f"{base}/reportUploadQuery.do?menuDisp=N"
+                    f"&queryFileName=BillgroupMaster.xml"
+                    f"&queryLabel=Billgroup%20Master"
+                    f"&className=&mode2=queryBackOffice&mode=&catg=Master")
+        try:
+            session.get(form_url, timeout=30, allow_redirects=True)
+        except Exception as _form_err:
+            log.warning(f"BillGroup form pre-fetch failed (continuing anyway): {_form_err}")
+        r = session.get(url, timeout=120, allow_redirects=True)
+        r.raise_for_status()
+        data = r.content
+        save_path.write_bytes(data)
+        kb = len(data) // 1024
+        head = data[:8] if data else b''
+        if not data:
+            shape = 'empty (0 bytes)'
+        elif head.startswith(b'\xd0\xcf\x11\xe0'):
+            shape = 'binary xls (CFBF)'
+        elif head.startswith(b'PK\x03\x04'):
+            shape = 'binary xlsx (zip)'
+        elif head.lstrip().startswith(b'<'):
+            shape = 'HTML (likely auth/error page)'
+        else:
+            shape = f'unknown ({head[:8].hex()})'
+        if progress_cb:
+            progress_cb("Bill Group Master", "ok",
+                        f"{kb} KB — saved · {shape}")
+        return {'ok': True, 'path': str(save_path), 'size': len(data),
+                'shape': shape,
+                'preview': data[:500].decode('utf-8', errors='replace')
+                            if shape.startswith('HTML') else None,
+                'url':  url}
+    except Exception as e:
+        import traceback
+        log.error(f"Bill Group Master download failed:\n{traceback.format_exc()}")
+        if progress_cb:
+            progress_cb("Bill Group Master", "error",
+                        f"{type(e).__name__}: {e}")
+        return {'ok': False, 'error': f'{type(e).__name__}: {e}',
+                'url': url}
+
+
+def download_client_billgroup_master(app_dir: Path, progress_cb=None) -> dict:
+    """Download the Client Master Bill Group XLS from the WS portal.
+
+    This master maps each client / account to the bill group they're
+    on AND — crucially for the fee calculator — the EFFECTIVE DATE on
+    which that bill-group assignment kicked in. Fees should accrue
+    from max(operator_window_from, effective_date), not from the
+    earliest AUM row's own span. Without this file the fee calc
+    over-counts the period for any client whose bill-group started
+    after the operator's window opened.
+
+    Persisted to ``masters/ClientBillgroupMaster.xls`` (shared
+    masters, not the date-bucket). Refreshed via the Fees screen's
+    download button when the operator changes a bill-group's
+    effective date or onboards a new client.
+
+    Returns ``{ok, path, size, shape}`` on success or
+    ``{ok: False, error, url}`` on failure.
+    """
+    base = _base_url()
+    shared_masters = app_dir / "masters"
+    shared_masters.mkdir(parents=True, exist_ok=True)
+    save_path = shared_masters / "ClientBillgroupMaster.xls"
+    auth_cache = app_dir / "config" / "ws_auth.json"
+
+    session = _requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "Referer": f"{base}/",
+    })
+
+    if progress_cb:
+        progress_cb("__login__", "running", "Logging in to WealthSpectrum...")
+    try:
+        _login(session, auth_cache)
+    except Exception as e:
+        log.warning(f"WS login failed, retrying with fresh session: {e}")
+        try:
+            auth_cache.unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            _login(session, auth_cache)
+        except Exception as e2:
+            return {'ok': False, 'error': f'login failed: {type(e2).__name__}: {e2}'}
+    if progress_cb:
+        progress_cb("__login__", "ok", "Logged in")
+
+    today = datetime.now()
+    # scope="*" is required for client-scoped masters (mirrors AccountMaster /
+    # ClientDetail in _MASTERS_BOQ). The global BillgroupMaster works with
+    # scope="" but ClientBillgroupMaster silently returns 0 bytes — the WS
+    # form is filtering by client and an empty scope short-circuits it.
+    url = _backoffice_url(base, today, "ClientBillgroupMaster.xml", "Master", "*")
+    try:
+        if progress_cb:
+            progress_cb("Client Bill Group Master", "running", "Fetching…")
+        # Pre-step: GET the form page so WS sets the WS_CSRFTOKEN cookie.
+        form_url = (f"{base}/reportUploadQuery.do?menuDisp=N"
+                    f"&queryFileName=ClientBillgroupMaster.xml"
+                    f"&queryLabel=Client%20Master%20Bill%20group"
+                    f"&className=&mode2=queryBackOffice&mode=&catg=Master")
+        try:
+            session.get(form_url, timeout=30, allow_redirects=True)
+        except Exception as _form_err:
+            log.warning(f"ClientBillgroup form pre-fetch failed (continuing anyway): {_form_err}")
+        r = session.get(url, timeout=120, allow_redirects=True)
+        r.raise_for_status()
+        data = r.content
+        save_path.write_bytes(data)
+        kb = len(data) // 1024
+        head = data[:8] if data else b''
+        if not data:
+            shape = 'empty (0 bytes)'
+        elif head.startswith(b'\xd0\xcf\x11\xe0'):
+            shape = 'binary xls (CFBF)'
+        elif head.startswith(b'PK\x03\x04'):
+            shape = 'binary xlsx (zip)'
+        elif head.lstrip().startswith(b'<'):
+            shape = 'HTML (likely auth/error page)'
+        else:
+            shape = f'unknown ({head[:8].hex()})'
+        if progress_cb:
+            progress_cb("Client Bill Group Master", "ok",
+                        f"{kb} KB — saved · {shape}")
+        return {'ok': True, 'path': str(save_path), 'size': len(data),
+                'shape': shape,
+                'preview': data[:500].decode('utf-8', errors='replace')
+                            if shape.startswith('HTML') else None,
+                'url':  url}
+    except Exception as e:
+        import traceback
+        log.error(f"Client Bill Group Master download failed:\n{traceback.format_exc()}")
+        if progress_cb:
+            progress_cb("Client Bill Group Master", "error",
+                        f"{type(e).__name__}: {e}")
+        return {'ok': False, 'error': f'{type(e).__name__}: {e}',
+                'url': url}
+
+
 def run_all_downloads(date_obj: datetime, app_dir: Path,
                       progress_cb=None, reports_filter=None) -> dict:
     """
@@ -519,6 +895,9 @@ def run_all_downloads(date_obj: datetime, app_dir: Path,
          _backoffice_url(base, date_obj, "OrderLog.xml", "", "*", date_obj)),
         ("Security Details",  "SecurityDetails",      "xls", True,
          _backoffice_url(base, date_obj, "SecurityDetail.xml", "Master", "")),
+        # ClientAverageAUM removed — fee calc now uses Clientwise
+        # Daily AUM downloaded on-demand per [from, to] window via
+        # ws_downloader.download_daily_aum.
     ] + [
         (display, stem, "xls", False,
          _backoffice_url(base, date_obj, qf, catg, scope))
@@ -568,6 +947,26 @@ def run_all_downloads(date_obj: datetime, app_dir: Path,
                 except Exception: pass
             results.append({"name": label, "status": "error", "error": detail})
 
+    # Bill-group masters: persisted to shared masters/ (not date-bucketed) so
+    # the client-creation form's picklist + the fee calculator's effective-
+    # date clip always read the latest copy. Chained here so the daily sweep
+    # picks up any operator changes without a separate UI button.
+    for label, fn in (("Bill Group Master", download_billgroup_master),
+                      ("Client Bill Group Master", download_client_billgroup_master)):
+        try:
+            r = fn(app_dir, progress_cb=progress_cb)
+            if r.get('ok'):
+                results.append({"name": label, "status": "ok",
+                                "path": r.get('path'), "size": r.get('size')})
+            else:
+                results.append({"name": label, "status": "error",
+                                "error": r.get('error') or 'unknown'})
+        except Exception as e:
+            import traceback
+            log.error(f"  FAIL  {label}:\n{traceback.format_exc()}")
+            results.append({"name": label, "status": "error",
+                            "error": f"{type(e).__name__}: {e}"})
+
     ok = sum(1 for r in results if r["status"] == "ok")
     return {"date": date_str, "results": results,
-            "success_count": ok, "total": len(download_specs)}
+            "success_count": ok, "total": len(download_specs) + 2}

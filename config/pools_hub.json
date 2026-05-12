@@ -16,7 +16,6 @@
       "bank": "ICICI",
       "bank_account": "000405165525",
       "kotak_client_id": "",
-      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
@@ -35,13 +34,6 @@
       "bank": "ICICI",
       "bank_account": "000405165526",
       "kotak_client_id": "",
-      "broker_cn_aliases": [
-        {
-          "mapin": "25281",
-          "note": "ICICI back-office UCC for MYSTICM",
-          "source": "icici_backoffice"
-        }
-      ],
       "ws_overrides": []
     },
     {
@@ -60,7 +52,6 @@
       "bank": "KOTAK",
       "bank_account": "6651091725",
       "kotak_client_id": "9000032175",
-      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
@@ -79,13 +70,6 @@
       "bank": "KOTAK",
       "bank_account": "6651091756",
       "kotak_client_id": "9000032176",
-      "broker_cn_aliases": [
-        {
-          "mapin": "24708",
-          "note": "ICICI back-office UCC for Kotak WEMO pool (routes to 204496980)",
-          "source": "icici_backoffice"
-        }
-      ],
       "ws_overrides": []
     },
     {
@@ -104,18 +88,6 @@
       "bank": "HDFC",
       "bank_account": "50200115218016",
       "kotak_client_id": "",
-      "broker_cn_aliases": [
-        {
-          "mapin": "HDFC00001816",
-          "note": "Motilal custodian code for Aristos",
-          "source": "motilal_custodian"
-        },
-        {
-          "mapin": "GSWP012",
-          "note": "Haitong trading code for Aristos",
-          "source": "haitong"
-        }
-      ],
       "ws_overrides": [
         {
           "if_client_id": "GWPJ0016",
@@ -140,7 +112,6 @@
       "bank": "HDFC",
       "bank_account": "50100865254360",
       "kotak_client_id": "",
-      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
@@ -157,7 +128,6 @@
       "bank": "HDFC",
       "bank_account": "50100864437761",
       "kotak_client_id": "",
-      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
@@ -176,22 +146,10 @@
       "bank": "AXIS",
       "bank_account": "925020047846436",
       "kotak_client_id": "",
-      "broker_cn_aliases": [
-        {
-          "mapin": "G587",
-          "note": "",
-          "source": "EMKY"
-        },
-        {
-          "mapin": "GSWP011",
-          "note": "Haitong code for Eterna",
-          "source": "ESSI"
-        }
-      ],
       "ws_overrides": [
         {
           "if_client_id_prefix": "FOF",
-          "note": "Axis GOLDETEPMS file sometimes includes FoF clients \u2014 route FOF* \u2192 GOLDFOFPMS",
+          "note": "Axis GOLDETEPMS file sometimes includes FoF clients — route FOF* → GOLDFOFPMS",
           "then_ws_scheme_code": "GOLDFOFPMS"
         }
       ]
@@ -212,7 +170,6 @@
       "bank": "AXIS",
       "bank_account": "925020038346493",
       "kotak_client_id": "",
-      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
@@ -231,7 +188,6 @@
       "bank": "ICICI",
       "bank_account": "000405164239",
       "kotak_client_id": "",
-      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
@@ -248,7 +204,6 @@
       "bank": "HDFC",
       "bank_account": "50200119352349",
       "kotak_client_id": "",
-      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
@@ -271,7 +226,6 @@
       "bank": "AXIS",
       "bank_account": "926020006985432",
       "kotak_client_id": "",
-      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
@@ -290,7 +244,6 @@
       "bank": "AXIS",
       "bank_account": "926020007004679",
       "kotak_client_id": "",
-      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
@@ -312,7 +265,6 @@
       "bank": "AXIS",
       "bank_account": "926020009534491",
       "kotak_client_id": "",
-      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
@@ -331,7 +283,6 @@
       "bank": "AXIS",
       "bank_account": "926020009549710",
       "kotak_client_id": "",
-      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
@@ -350,7 +301,6 @@
       "bank": "AXIS",
       "bank_account": "926020004579486",
       "kotak_client_id": "",
-      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
@@ -369,7 +319,6 @@
       "bank": "AXIS",
       "bank_account": "926020004744570",
       "kotak_client_id": "",
-      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
@@ -388,7 +337,6 @@
       "bank": "AXIS",
       "bank_account": "925020055970703",
       "kotak_client_id": "",
-      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
@@ -407,7 +355,6 @@
       "bank": "AXIS",
       "bank_account": "925020055975740",
       "kotak_client_id": "",
-      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
@@ -426,7 +373,6 @@
       "bank": "ICICI",
       "bank_account": "000405165110",
       "kotak_client_id": "",
-      "broker_cn_aliases": [],
       "ws_overrides": []
     },
     {
@@ -445,7 +391,6 @@
       "bank": "",
       "bank_account": "",
       "kotak_client_id": "",
-      "broker_cn_aliases": [],
       "ws_overrides": []
     }
   ],

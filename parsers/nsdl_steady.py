@@ -73,6 +73,8 @@ class NSDLParser:
         'net_rate':        ['net_rate', 'net rate'],
         'brokerage_amount':['brokerage_amount', 'brokerage amount'],
         'brokerage_rate':  ['brokerage_rate', 'brokerage rate'],
+        'service_tax':     ['service_tax', 'service tax'],
+        'stamp_duty':      ['stamp_duty', 'stamp duty'],
         'stt':             ['service_transaction_tax', 'service transaction tax'],
         'sebi_regn_no':    ['sebi_regn_no.', 'sebi regn no.', 'sebi regn no'],
         'broker_name':     ['broker_name', 'broker name'],
@@ -174,6 +176,10 @@ class NSDLParser:
                 return 0.0
 
         count = 0
+        service_tax_count = 0
+        service_tax_total = 0.0
+        stamp_duty_count  = 0
+        stamp_duty_total  = 0.0
         for row in all_rows[header_idx + 1:]:
             if not row or all(c is None or str(c).strip() == '' for c in row):
                 continue
@@ -212,6 +218,26 @@ class NSDLParser:
             )
             result.records.append(record)
             count += 1
+
+            svc_tax = flt(get_cell(row, 'service_tax'))
+            if svc_tax != 0.0:
+                service_tax_count += 1
+                service_tax_total += svc_tax
+            stamp = flt(get_cell(row, 'stamp_duty'))
+            if stamp != 0.0:
+                stamp_duty_count += 1
+                stamp_duty_total += stamp
+
+        if service_tax_count:
+            result.warnings.append(
+                f"NSDL: {service_tax_count} row(s) have non-zero Service Tax "
+                f"(total Rs {service_tax_total:,.2f}). Expected all zero."
+            )
+        if stamp_duty_count:
+            result.warnings.append(
+                f"NSDL: {stamp_duty_count} row(s) have non-zero Stamp Duty "
+                f"(total Rs {stamp_duty_total:,.2f}). Expected all zero."
+            )
 
         if not result.records:
             result.warnings.append(

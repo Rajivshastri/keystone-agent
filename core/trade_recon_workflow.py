@@ -666,6 +666,8 @@ def run_trade_recon(date_str: str, fm, broker_map: dict, pool_map_dict: dict,
         if nr.ok:
             nsdl_records = nr.records
             log_fn(f"NSDL: {len(nsdl_records)} records")
+            for w in nr.warnings:
+                log_fn(w, 'warning')
         else:
             log_fn(f"NSDL parse error: {nr.error}", 'warning')
     else:

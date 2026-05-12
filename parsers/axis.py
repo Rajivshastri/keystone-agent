@@ -109,19 +109,25 @@ class AxisParser(BaseParser):
     def _open_workbook(self, file_path: str, password: str):
         """Open xlsx — handles both plain and CDFV2-encrypted files.
 
-        Raises with the specific failure cause (wrong password / corrupt
-        file / msoffcrypto bug) instead of returning None.
+        Raises a parser-friendly exception with the specific failure
+        cause on failure (wrong password / corrupt file / msoffcrypto
+        bug). Previous behaviour returned None and surfaced as a
+        generic "Could not open Axis file" — the actual error was only
+        in the log file, which operators rarely check.
         """
         plain_error = None
 
+        # Try plain open first (file may not be encrypted)
         try:
             return openpyxl.load_workbook(file_path)
         except Exception as e:
             plain_error = e
 
+        # Encrypted: need a password
         if not password:
             raise RuntimeError(
-                f"Axis file is encrypted but no file_password is configured. "
+                f"Axis file is encrypted but no file_password is configured "
+                f"in Settings (sources.json[axis].file_password). "
                 f"Plain-open error: {plain_error}"
             )
 
@@ -135,8 +141,9 @@ class AxisParser(BaseParser):
                 return openpyxl.load_workbook(decrypted)
         except msoffcrypto.exceptions.InvalidKeyError as e:
             raise RuntimeError(
-                f"Axis file decryption failed: wrong password. "
-                f"Underlying: {e}"
+                f"Axis file decryption failed: wrong password. Check "
+                f"sources.json[axis].file_password against the password "
+                f"on the latest Axis email. Underlying: {e}"
             )
         except Exception as e:
             raise RuntimeError(

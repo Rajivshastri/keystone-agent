@@ -82,13 +82,18 @@ class BaseParser:
 
         Also handles parenthetical negatives — Indian custodian reports
         commonly write `(500)` for −500 (sells, short positions, debits).
+        Previously these silently fell through to ValueError → 0.0,
+        understating pending-sell columns and inflating computed
+        `logical = saleable + pend_buy − pend_sell` totals.
         """
         if value is None:
             return 0.0
         if isinstance(value, (int, float)):
             return float(value)
         s = str(value).strip()
+        # Strip currency symbols, spaces, commas
         s = s.replace(',', '').replace('₹', '').replace('Rs.', '').replace('Rs', '').strip()
+        # Parenthetical negative: (1234.5) → -1234.5
         is_neg_parens = s.startswith('(') and s.endswith(')')
         if is_neg_parens:
             s = s[1:-1].strip()

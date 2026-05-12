@@ -30,13 +30,19 @@ ANTHROPIC_API = 'https://api.anthropic.com/v1/messages'
 CLAUDE_MODEL   = 'claude-sonnet-4-20250514'
 
 
-# STT is printed two different ways on CNs:
+# STT is printed three different ways on CNs:
 #   - long form "Securities Transaction Tax ... 235.00"  (Equirus / IIFL / Haitong)
-#   - short form "STT 235.00" on its own line           (Emkay)
-# This combined regex matches either; group 1 OR group 2 holds the amount.
+#   - short form "STT 235.00" on its own line            (Emkay)
+#   - bracketed form "[STT-INST] 235.00 ..."             (Dhanki)
+# The bracketed form prepends '[' and appends a hyphen-decorated suffix
+# like '-INST', '-PAY', etc. and a closing ']' before the amount, which
+# the bare-STT alternative can't match because it required whitespace
+# immediately after 'STT'.
+# This combined regex matches all three; group 1 (long form) OR group 2
+# (short / bracketed) holds the amount.
 _STT_RE = re.compile(
     r'(?:Securit\w*\s+Tr[xa]\w*\s+Tax[^0-9]*([\d,]+\.?\d*))'
-    r'|(?:(?:^|\n)\s*STT\s+([\d,]+\.?\d*))',
+    r'|(?:(?:^|\n)\s*\[?STT(?:[-\w]+)?\]?\s+([\d,]+\.?\d*))',
     re.IGNORECASE,
 )
 

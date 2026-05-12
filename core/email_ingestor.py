@@ -148,6 +148,90 @@ class EmailIngestor:
         return all([self.tenant_id, self.client_id,
                     self.client_secret, self.mailbox])
 
+    def configured_diagnostic(self) -> str:
+        """Return a one-line diagnostic listing which Azure config fields
+        are missing. Used by callers that log 'Azure not configured' so
+        the operator can see WHICH field tripped the check rather than
+        guessing across four possibilities (tenant_id, client_id,
+        client_secret, mailbox). Returns empty string when fully
+        configured."""
+        missing = []
+        if not self.tenant_id:     missing.append('tenant_id')
+        if not self.client_id:     missing.append('client_id')
+        if not self.client_secret: missing.append('client_secret')
+        if not self.mailbox:       missing.append('mailbox')
+        return f"missing: {', '.join(missing)}" if missing else ''
+
+    def _log_send_intent(self, kind: str, subject: str,
+                          to_list: list, bcc_list: list) -> None:
+        """One-line operator-readable diagnostic before each Graph send.
+
+        Captures the four things that determine whether a message
+        actually lands in the right inboxes:
+          - sender mailbox (the From address)
+          - test-mode override (when set, all sends go to a single
+            override address — easy to forget about and silently
+            redirects every email)
+          - resolved TO list (after test_mode + self-bcc transforms)
+          - resolved BCC list (after self-bcc split)
+
+        Surfaces as a single INFO line per send in Azure App Service
+        Log Stream, so when an operator reports "X didn't get the mail"
+        we can confirm in seconds whether (a) X was on the list at all,
+        (b) X was diverted by test mode, or (c) the message left the
+        app and the issue is downstream (Junk filter, inbox rule,
+        mailbox quota, message trace).
+        """
+        tm = f' TEST_MODE={self.test_mode_email!r}' if self.test_mode_email else ''
+        logger.info(
+            f"send[{kind}] from={self.mailbox!r} subject={subject[:80]!r}"
+            f"{tm} to={to_list} bcc={bcc_list}"
+        )
+
+    def _split_self_to_bcc(self, recipients: list) -> tuple:
+        """Split a recipient list so any address matching the sending
+        mailbox (``self.mailbox``) lands in BCC instead of TO.
+
+        Microsoft 365 / Exchange transport runs an anti-loop check on
+        ``sendMail`` calls: when the From mailbox is also in TO/CC, the
+        transport suppresses the Inbox delivery and the message ends up
+        in Sent Items only. That's why an operator who has the sending
+        address (e.g. operations@thegoldstandard.in) listed in
+        recon_recipients sees other recipients receive the email but
+        not their own Inbox. BCC self-send is treated more permissively
+        by the same transport, so moving the self-match to BCC restores
+        Inbox delivery without changing the visible TO line for the
+        other recipients.
+
+        Returns ``(to_recipients, bcc_recipients)``. Both lists are
+        deduplicated and empty-stripped. Logs a one-line warning when
+        the split actually moves anything so the audit trail shows
+        why operator's Inbox got the mail via BCC.
+        """
+        own = (self.mailbox or '').strip().lower()
+        to_list: list[str] = []
+        bcc_list: list[str] = []
+        seen_to: set = set()
+        seen_bcc: set = set()
+        for r in (recipients or []):
+            addr = (r or '').strip()
+            if not addr:
+                continue
+            low = addr.lower()
+            if own and low == own:
+                if low not in seen_bcc:
+                    seen_bcc.add(low)
+                    bcc_list.append(addr)
+            else:
+                if low not in seen_to:
+                    seen_to.add(low)
+                    to_list.append(addr)
+        if bcc_list:
+            logger.info(
+                f"send: moved sender-mailbox recipient(s) {bcc_list} to BCC "
+                f"(Exchange anti-loop suppresses Inbox delivery on TO/CC self-send)")
+        return to_list, bcc_list
+
     def _apply_test_mode(self, recipients: list, body_html: str) -> tuple:
         """Rewrite recipients + body when test mode is on.
 
@@ -963,9 +1047,18 @@ class EmailIngestor:
           3. No further fallback — missing date should be flagged
 
         For **holdings / other sources** (is_bank=False):
-          1. Date found in filename minus offset
-          2. Fallback: email received date minus offset (if offset > 0)
+          1. Date found in filename minus EFFECTIVE offset (see below)
+          2. Fallback: email received date minus EFFECTIVE offset (if offset > 0)
           3. Final fallback: requested_date (pivot date of the fetch)
+
+        **Effective offset rule** (non-bank only):
+          The configured `offset` assumes the custodian generates the file
+          *after midnight* (filename date is T+1, real data is T → subtract 1).
+          ICICI End_Client_Holding sometimes makes the cutoff and is sent
+          late the same evening — filename date is already the data date.
+          When the email landed between 20:00 and 23:59 IST, treat as
+          same-day delivery and skip the offset. Outside that window
+          (typically post-midnight T+1 deliveries) keep the configured offset.
         """
         import re
         from datetime import datetime, timedelta
@@ -984,10 +1077,13 @@ class EmailIngestor:
                 pass
 
         # ── Effective offset (non-bank only) ──────────────────────────
-        # Evening (20:00–23:59 IST) deliveries skip the offset. Some
-        # custodians (e.g. ICICI End_Client_Holding) sometimes squeeze
-        # a same-day file out before midnight — the filename date IS
-        # the data date, so subtracting `offset` would push it to D-1.
+        # Evening (20:00–23:59 IST) deliveries skip the offset. Custodians
+        # that occasionally squeeze a same-day file out before midnight
+        # stamp it with the data date directly, so subtracting `offset`
+        # would push it to D-1. Widened from the original 22:00 cutoff
+        # to capture earlier-evening deliveries (a few custodians push
+        # files between 20:00 and 22:00 IST when the post-trade run
+        # finishes early).
         effective_offset = offset
         if not is_bank and offset > 0 and received_date:
             try:
@@ -1094,6 +1190,84 @@ class EmailIngestor:
             logger.debug(f"Matched '{sender}' / '{subject[:40]}' to source '{source['name']}'")
             return source
         return None
+
+
+    def send_simple_email(self, subject: str, body_html: str,
+                          recipients: list,
+                          attachments: list = None,
+                          cc: list = None) -> dict:
+        """Generic Microsoft Graph sendMail. attachments is a list of
+        {'name': str, 'path': str, 'content_type': str (optional)} dicts;
+        each gets base64-encoded and attached. ``cc`` is an optional
+        list of additional addresses to copy — used by the welcome-
+        email flow to copy fund-manager + intermediary on each pool's
+        client mail. Used by ad-hoc flows like the new-pool broker
+        invitation email — keeps the heavyweight send_*_summary
+        methods specialised to recon results."""
+        import base64 as _b64
+        import os as _os
+        if not self.is_configured():
+            return {'ok': False, 'message': 'Azure credentials not configured.'}
+        if not recipients:
+            return {'ok': False, 'message': 'No recipients specified.'}
+        att_payload = []
+        for a in (attachments or []):
+            p = a.get('path')
+            if not p or not _os.path.exists(p):
+                logger.warning(f"send_simple_email: attachment missing — {p}")
+                continue
+            try:
+                with open(p, 'rb') as fh:
+                    raw = fh.read()
+                att_payload.append({
+                    '@odata.type':  '#microsoft.graph.fileAttachment',
+                    'name':         a.get('name') or _os.path.basename(p),
+                    'contentType':  a.get('content_type') or 'application/octet-stream',
+                    'contentBytes': _b64.b64encode(raw).decode('utf-8'),
+                })
+            except Exception as e:
+                logger.warning(f"send_simple_email: failed to attach {p}: {e}")
+        recipients, body_html = self._apply_test_mode(recipients, body_html)
+        to_list, bcc_list = self._split_self_to_bcc(recipients)
+        self._log_send_intent('simple', subject, to_list, bcc_list)
+        # Cc list — dedupe against to_list / bcc_list so the same
+        # address never appears twice on the message envelope.
+        cc_list = []
+        if cc:
+            seen = {a.lower() for a in (to_list + bcc_list)}
+            for addr in cc:
+                a = (addr or '').strip()
+                if a and a.lower() not in seen:
+                    cc_list.append(a)
+                    seen.add(a.lower())
+        msg = {
+            'subject': subject,
+            'body':    {'contentType': 'HTML', 'content': body_html},
+            'toRecipients': [{'emailAddress': {'address': r}} for r in to_list],
+            'attachments': att_payload,
+        }
+        if cc_list:
+            msg['ccRecipients'] = [{'emailAddress': {'address': r}} for r in cc_list]
+        if bcc_list:
+            msg['bccRecipients'] = [{'emailAddress': {'address': r}} for r in bcc_list]
+        payload = {'message': msg, 'saveToSentItems': True}
+        url = f"{GRAPH_BASE}/users/{self.mailbox}/sendMail"
+        try:
+            resp = requests.post(url, headers=self._headers(),
+                                 json=payload, timeout=60)
+            resp.raise_for_status()
+            sent_to = to_list + (bcc_list and [f'{a} (bcc)' for a in bcc_list] or [])
+            logger.info(f"send[simple] graph_status={resp.status_code} OK")
+            return {'ok': True,
+                    'message': f"Sent to {', '.join(sent_to)} "
+                               f"({len(att_payload)} attachment(s))"}
+        except requests.HTTPError as e:
+            msg = f"Graph error {e.response.status_code}: {e.response.text[:300]}"
+            logger.error(msg)
+            return {'ok': False, 'message': msg}
+        except Exception as e:
+            logger.error(f"send_simple_email failed: {e}")
+            return {'ok': False, 'message': str(e)}
 
 
     def send_recon_summary(self, results: dict, date_str: str,
@@ -1277,28 +1451,28 @@ class EmailIngestor:
 
         # Test-mode rewrite — diverts to a single address when configured.
         recipients, html_body = self._apply_test_mode(recipients, html_body)
+        to_list, bcc_list = self._split_self_to_bcc(recipients)
+        self._log_send_intent('recon', subject, to_list, bcc_list)
 
-        payload = {
-            'message': {
-                'subject': subject,
-                'body': {'contentType': 'HTML', 'content': html_body},
-                'toRecipients': [
-                    {'emailAddress': {'address': r.strip()}}
-                    for r in recipients if r.strip()
-                ],
-                'attachments': attachments,
-            },
-            'saveToSentItems': True,
+        msg = {
+            'subject': subject,
+            'body': {'contentType': 'HTML', 'content': html_body},
+            'toRecipients': [{'emailAddress': {'address': r}} for r in to_list],
+            'attachments': attachments,
         }
+        if bcc_list:
+            msg['bccRecipients'] = [{'emailAddress': {'address': r}} for r in bcc_list]
+        payload = {'message': msg, 'saveToSentItems': True}
 
         url = f"{GRAPH_BASE}/users/{self.mailbox}/sendMail"
         try:
             resp = requests.post(url, headers=self._headers(),
                                  json=payload, timeout=30)
             resp.raise_for_status()
-            logger.info(f"Recon summary email sent to: {recipients}")
+            sent_to = to_list + [f'{a} (bcc)' for a in bcc_list]
+            logger.info(f"send[recon] graph_status={resp.status_code} OK to={sent_to}")
             return {'ok': True,
-                    'message': f"Email sent to {', '.join(recipients)}"}
+                    'message': f"Email sent to {', '.join(sent_to)}"}
         except requests.HTTPError as e:
             msg = (f"Graph API error {e.response.status_code}: "
                    f"{e.response.text[:300]}")
@@ -1476,28 +1650,28 @@ class EmailIngestor:
 
         # Test-mode rewrite — diverts to a single address when configured.
         recipients, html_body = self._apply_test_mode(recipients, html_body)
+        to_list, bcc_list = self._split_self_to_bcc(recipients)
+        self._log_send_intent('bank_recon', subject, to_list, bcc_list)
 
-        payload = {
-            'message': {
-                'subject': subject,
-                'body': {'contentType': 'HTML', 'content': html_body},
-                'toRecipients': [
-                    {'emailAddress': {'address': r.strip()}}
-                    for r in recipients if r.strip()
-                ],
-                'attachments': attachments,
-            },
-            'saveToSentItems': True,
+        msg_obj = {
+            'subject': subject,
+            'body': {'contentType': 'HTML', 'content': html_body},
+            'toRecipients': [{'emailAddress': {'address': r}} for r in to_list],
+            'attachments': attachments,
         }
+        if bcc_list:
+            msg_obj['bccRecipients'] = [{'emailAddress': {'address': r}} for r in bcc_list]
+        payload = {'message': msg_obj, 'saveToSentItems': True}
 
         url = f"{GRAPH_BASE}/users/{self.mailbox}/sendMail"
         try:
             resp = requests.post(url, headers=self._headers(),
                                  json=payload, timeout=30)
             resp.raise_for_status()
-            logger.info(f"Bank recon summary email sent to: {recipients}")
+            sent_to = to_list + [f'{a} (bcc)' for a in bcc_list]
+            logger.info(f"send[bank_recon] graph_status={resp.status_code} OK to={sent_to}")
             return {'ok': True,
-                    'message': f"Email sent to {', '.join(recipients)}"}
+                    'message': f"Email sent to {', '.join(sent_to)}"}
         except requests.HTTPError as e:
             msg = (f"Graph API error {e.response.status_code}: "
                    f"{e.response.text[:200]}")
@@ -1585,28 +1759,28 @@ class EmailIngestor:
 
         # Test-mode rewrite — diverts to a single address when configured.
         recipients, html_body = self._apply_test_mode(recipients, html_body)
+        to_list, bcc_list = self._split_self_to_bcc(recipients)
+        self._log_send_intent('reminder', subject, to_list, bcc_list)
 
-        payload = {
-            'message': {
-                'subject': subject,
-                'body': {'contentType': 'HTML', 'content': html_body},
-                'toRecipients': [
-                    {'emailAddress': {'address': r.strip()}}
-                    for r in recipients if r and r.strip()
-                ],
-                'attachments': attachments,
-            },
-            'saveToSentItems': True,
+        msg_obj = {
+            'subject': subject,
+            'body': {'contentType': 'HTML', 'content': html_body},
+            'toRecipients': [{'emailAddress': {'address': r}} for r in to_list],
+            'attachments': attachments,
         }
+        if bcc_list:
+            msg_obj['bccRecipients'] = [{'emailAddress': {'address': r}} for r in bcc_list]
+        payload = {'message': msg_obj, 'saveToSentItems': True}
 
         url = f'{GRAPH_BASE}/users/{self.mailbox}/sendMail'
         try:
             resp = requests.post(url, headers=self._headers(),
                                  json=payload, timeout=30)
             resp.raise_for_status()
-            logger.info(f'Reminder #{reminder_count + 1} sent: {recon_type}/'
-                        f'{date_str} → {recipients}')
-            return {'ok': True, 'message': f'Reminder sent to {", ".join(recipients)}'}
+            sent_to = to_list + [f'{a} (bcc)' for a in bcc_list]
+            logger.info(f'send[reminder] graph_status={resp.status_code} '
+                        f'#{reminder_count + 1} {recon_type}/{date_str} OK to={sent_to}')
+            return {'ok': True, 'message': f'Reminder sent to {", ".join(sent_to)}'}
         except requests.HTTPError as e:
             msg = (f'Graph API error {e.response.status_code}: '
                    f'{e.response.text[:300]}')
@@ -1673,11 +1847,17 @@ class EmailIngestor:
 
         # Test-mode rewrite — diverts to a single address when configured.
         recipients, body_html = self._apply_test_mode(recipients, body_html)
+        to_list, bcc_list = self._split_self_to_bcc(recipients)
+        self._log_send_intent('trade_recon', subject, to_list, bcc_list)
 
-        to_recipients = [{'emailAddress': {'address': r}} for r in recipients]
-        payload = {'message': {'subject': subject,
-                               'body': {'contentType': 'HTML', 'content': body_html},
-                               'toRecipients': to_recipients}}
+        msg_obj = {
+            'subject': subject,
+            'body': {'contentType': 'HTML', 'content': body_html},
+            'toRecipients': [{'emailAddress': {'address': r}} for r in to_list],
+        }
+        if bcc_list:
+            msg_obj['bccRecipients'] = [{'emailAddress': {'address': r}} for r in bcc_list]
+        payload = {'message': msg_obj}
 
         if attachment_path and os.path.exists(attachment_path):
             import base64
@@ -1694,8 +1874,9 @@ class EmailIngestor:
             url  = f'{GRAPH_BASE}/users/{self.mailbox}/sendMail'
             resp = requests.post(url, headers=self._headers(), json=payload, timeout=30)
             resp.raise_for_status()
-            logger.info(f'Trade recon email sent to: {recipients}')
-            return {'ok': True, 'message': f'Trade recon email sent to {len(recipients)} recipient(s)'}
+            sent_to = to_list + [f'{a} (bcc)' for a in bcc_list]
+            logger.info(f'send[trade_recon] graph_status={resp.status_code} OK to={sent_to}')
+            return {'ok': True, 'message': f'Trade recon email sent to {len(sent_to)} recipient(s)'}
         except requests.HTTPError as e:
             msg = f'Graph API error {e.response.status_code}: {e.response.text[:200]}'
             logger.error(f'Trade recon email failed: {msg}')
@@ -1827,6 +2008,8 @@ class EmailIngestor:
         html_body = '\n'.join(parts)
 
         recipients, html_body = self._apply_test_mode(recipients, html_body)
+        to_list, bcc_list = self._split_self_to_bcc(recipients)
+        self._log_send_intent(f'workflow.{kind}', subject, to_list, bcc_list)
 
         attachments = []
         if attachment_path and os.path.exists(attachment_path):
@@ -1846,27 +2029,25 @@ class EmailIngestor:
             except Exception as e:
                 logger.warning(f"Could not attach file: {e}")
 
-        payload = {
-            'message': {
-                'subject': subject,
-                'body': {'contentType': 'HTML', 'content': html_body},
-                'toRecipients': [
-                    {'emailAddress': {'address': r.strip()}}
-                    for r in recipients if r.strip()
-                ],
-                'attachments': attachments,
-            },
-            'saveToSentItems': True,
+        msg_obj = {
+            'subject': subject,
+            'body': {'contentType': 'HTML', 'content': html_body},
+            'toRecipients': [{'emailAddress': {'address': r}} for r in to_list],
+            'attachments': attachments,
         }
+        if bcc_list:
+            msg_obj['bccRecipients'] = [{'emailAddress': {'address': r}} for r in bcc_list]
+        payload = {'message': msg_obj, 'saveToSentItems': True}
 
         url = f"{GRAPH_BASE}/users/{self.mailbox}/sendMail"
         try:
             resp = requests.post(url, headers=self._headers(),
                                  json=payload, timeout=30)
             resp.raise_for_status()
-            logger.info(f"{kind} workflow email sent to: {recipients}")
+            sent_to = to_list + [f'{a} (bcc)' for a in bcc_list]
+            logger.info(f"send[workflow.{kind}] graph_status={resp.status_code} OK to={sent_to}")
             return {'ok': True,
-                    'message': f"{kind} email sent to {', '.join(recipients)}"}
+                    'message': f"{kind} email sent to {', '.join(sent_to)}"}
         except requests.HTTPError as e:
             msg = (f"Graph API error {e.response.status_code}: "
                    f"{e.response.text[:300]}")

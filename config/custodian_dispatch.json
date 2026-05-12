@@ -11,40 +11,32 @@
   "custodians": {
     "AXIS": {
       "interface_type": "AXIS",
-      "report_format": "C",
-      "email_to": [
-        "rajiv@thegoldstandard.in"
-      ],
+      "report_format": "X",
+      "email_to": [],
       "email_subject": "Trade Allocation - {mapin} - {date}",
       "email_body": "Dear team,\n\nPlease find attached the trade allocation instructions for {mapin} for trades dated {date}.\n\nRegards,\nGoldStandard Wealth Pvt Ltd",
       "send_from": "operations@thegoldstandard.in"
     },
     "HDFC": {
       "interface_type": "HDFCBANK",
-      "report_format": "C",
-      "email_to": [
-        "rajiv@thegoldstandard.in"
-      ],
+      "report_format": "X",
+      "email_to": [],
       "email_subject": "Trade Allocation - {mapin} - {date}",
       "email_body": "Dear team,\n\nPlease find attached the trade allocation instructions for {mapin} for trades dated {date}.\n\nRegards,\nGoldStandard Wealth Pvt Ltd",
       "send_from": "operations@thegoldstandard.in"
     },
     "ICICI": {
       "interface_type": "ICICI BANK",
-      "report_format": "C",
-      "email_to": [
-        "rajiv@thegoldstandard.in"
-      ],
+      "report_format": "X",
+      "email_to": [],
       "email_subject": "Trade Allocation - {mapin} - {date}",
       "email_body": "Dear team,\n\nPlease find attached the trade allocation instructions for {mapin} for trades dated {date}.\n\nRegards,\nGoldStandard Wealth Pvt Ltd",
       "send_from": "operations@thegoldstandard.in"
     },
     "KOTAK": {
       "interface_type": "KOTAK - CUSTODY",
-      "report_format": "C",
-      "email_to": [
-        "rajiv@thegoldstandard.in"
-      ],
+      "report_format": "X",
+      "email_to": [],
       "email_subject": "Trade Allocation - {mapin} - {date}",
       "email_body": "Dear team,\n\nPlease find attached the trade allocation instructions for {mapin} for trades dated {date}.\n\nRegards,\nGoldStandard Wealth Pvt Ltd",
       "send_from": "shabnam@thegoldstandard.in"

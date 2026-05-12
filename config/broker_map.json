@@ -487,6 +487,11 @@
           "pool_id": "goldfalpms_axis",
           "alias_code": "Z21501",
           "note": "Motilal ClientCode for Focused Alpha"
+        },
+        {
+          "pool_id": "aristos_hdfc",
+          "alias_code": "HDFC00001816",
+          "note": "Motilal custodian code for Aristos"
         }
       ]
     },

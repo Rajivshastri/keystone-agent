@@ -199,7 +199,8 @@ class Exporter:
                     'parent_pool_id': mapping.get('parent_pool_id', ''),
                     'is_sub_account': bool(mapping.get('is_sub_account')),
                 })
-        # Pass 2: scheme codes that only appear as conditional-rule targets.
+        # Pass 2: scheme codes that only appear as conditional-rule targets
+        # (i.e. routed-only, no pool of their own). Add as bare entries.
         for mapping in self.mappings:
             for rule in mapping.get('conditional_rules', []):
                 ccode = rule.get('then_ws_scheme_code')
@@ -347,8 +348,10 @@ class Exporter:
     def get_coverage(self, records: List[HoldingRecord]) -> dict:
         coverage = {}
         # Sub-account → parent linkage, used after the record loop to
-        # propagate "file present" from a parent pool to its sub-pools that
-        # share the same physical custody file (e.g. Aristos NRO Mustafa).
+        # propagate "file present" from a parent pool that owns the custody
+        # file (e.g. Aristos HDFC) to its sub-pools (e.g. Aristos NRO Mustafa)
+        # which share the same physical file but may have zero rows on a
+        # given day.
         sub_to_parent_pool: dict = {}
         pool_to_scheme:    dict = {}
         for cfg in self.get_all_configured_scheme_codes():

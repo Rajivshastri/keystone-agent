@@ -146,37 +146,3 @@ class ReconReminderStore:
         with self._lock:
             data = self._load()
             return list(data['pending'].values())
-
-    def clear_one(self, recon_type: str, date_str: str) -> bool:
-        """Remove a single pending reminder. Returns True if found+removed.
-
-        Fired by the CP's per-row "Cancel" button (power-user mode) via
-        the reminder_clear_one command. Safe to call on an unknown key;
-        returns False in that case.
-        """
-        with self._lock:
-            data = self._load()
-            removed = data.get('pending', {}).pop(self._key(recon_type, date_str), None)
-            if removed is not None:
-                self._save(data)
-        if removed is not None:
-            logger.info(f'recon_reminders: cleared {recon_type}/{date_str} via clear_one '
-                        f'(had sent {removed.get("reminder_count", 0)} reminder(s))')
-            return True
-        return False
-
-    def clear_all(self) -> int:
-        """Remove every pending reminder. Returns the count cleared.
-
-        Operator-initiated bulk wipe — fired by the CP's "Clear all
-        reminders" button via the reminder_clear_all command. Safe to
-        call on a missing/empty store; returns 0 in that case.
-        """
-        with self._lock:
-            data = self._load()
-            cleared = len(data.get('pending', {}))
-            data['pending'] = {}
-            self._save(data)
-        if cleared:
-            logger.info(f'recon_reminders: cleared {cleared} entrie(s) via clear_all')
-        return cleared

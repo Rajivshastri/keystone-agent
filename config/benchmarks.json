@@ -1,0 +1,61 @@
+{
+  "_synced_at": "16:54:55",
+  "rows": [
+    {
+      "code": "NIFTY50TRI",
+      "description": "Nifty 50 TRI",
+      "nse_ref": "",
+      "bse_ref": "",
+      "internal_ref": "",
+      "index_type": "Standard BM"
+    },
+    {
+      "code": "BSE500TRI",
+      "description": "BSE 500 TRI",
+      "nse_ref": "",
+      "bse_ref": "",
+      "internal_ref": "",
+      "index_type": "Standard BM"
+    },
+    {
+      "code": "MEDIUMTOLONG",
+      "description": "Nifty Medium to Long Duration Debt Index",
+      "nse_ref": "",
+      "bse_ref": "",
+      "internal_ref": "",
+      "index_type": "Standard BM"
+    },
+    {
+      "code": "HYBRID5050MOD",
+      "description": "CRISIL Hybrid 50+50 Moderate Index",
+      "nse_ref": "",
+      "bse_ref": "",
+      "internal_ref": "",
+      "index_type": "Standard BM"
+    },
+    {
+      "code": "MULTIASSET2",
+      "description": "NSE Muti Asset Index 2",
+      "nse_ref": "",
+      "bse_ref": "",
+      "internal_ref": "",
+      "index_type": "Standard BM"
+    },
+    {
+      "code": "NIFTY50HYBRID",
+      "description": "Nifty 50 Hybrid Composite Debt 50:50 Index",
+      "nse_ref": "",
+      "bse_ref": "",
+      "internal_ref": "",
+      "index_type": "Standard BM"
+    },
+    {
+      "code": "MULTIASSET1",
+      "description": "NSE Multi Asset Index 1",
+      "nse_ref": "",
+      "bse_ref": "",
+      "internal_ref": "",
+      "index_type": "Standard BM"
+    }
+  ]
+}

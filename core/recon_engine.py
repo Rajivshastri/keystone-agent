@@ -371,6 +371,10 @@ class ReconEngine:
     CUSTODY_ONLY      = 'custody_only'
     WS_ONLY           = 'ws_only'
     UNVERIFIED        = 'unverified'
+    # Pool total matches sum of WS investors, but custodian holds the units
+    # at pool level only — i.e. GSW has not communicated per-investor
+    # allocation to the custodian. Quantity-wise reconciled, allocation gap.
+    INVESTOR_ALLOC_NOT_COMMUNICATED = 'investor_alloc_not_communicated'
 
     CATEGORY_LABELS = {
         CLEAN:             '✓ Clean Match',
@@ -380,6 +384,8 @@ class ReconEngine:
         CUSTODY_ONLY:      '✗ Custody Only (Break)',
         WS_ONLY:           '✗ WS Only (Break)',
         UNVERIFIED:        '? Unverified (Missing Custodian Data)',
+        INVESTOR_ALLOC_NOT_COMMUNICATED:
+            '! Investor Allocation Not Communicated to Custodian',
     }
 
     def __init__(self, mappings_config: dict):
@@ -470,6 +476,13 @@ class ReconEngine:
         # Build custodian lookup: (client, isin) → record
         # Apply Kotak trade-day remapping: replace strategy pool code with investor code
         cust_lookup: Dict[Tuple[str, str], dict] = {}
+        # Pool-aggregate capture: when the custodian reports a pool-level row
+        # (e.g. Axis GOLDEQUPMS with no per-client breakdown), we still drop it
+        # from the main recon key-space BUT remember the ISIN totals. A later
+        # pass uses them to validate matching WS rows — without this, WS
+        # positions under that pool look "Unverified" for ever because the
+        # pool aggregate never finds a matching (client, isin) key on the WS side.
+        pool_aggregates: Dict[str, dict] = {}
         for rec in records:
             client_id = rec.client_id
             # Skip advisory client codes — excluded from reconciliation entirely
@@ -480,7 +493,17 @@ class ReconEngine:
             # addition to the individual client rows. These pool-level rows duplicate
             # the individual client positions; WS tracks at client level only.
             if pool_mapin_codes and client_id.upper() in pool_mapin_codes:
-                logger.debug(f'Skipping pool-level custodian row: client={client_id} isin={rec.isin}')
+                _agg = pool_aggregates.setdefault(rec.isin, {
+                    'logical':  0.0,
+                    'saleable': 0.0,
+                    'client':   client_id,
+                    'source':   rec.source,
+                    'security_name': rec.security_name,
+                })
+                _agg['logical']  += rec.logical_holding
+                _agg['saleable'] += rec.saleable_holding
+                logger.debug(f'Skipping pool-level custodian row (captured '
+                             f'for post-pass): client={client_id} isin={rec.isin}')
                 continue
             # Remap Kotak pool codes to investor codes
             if rec.source == 'kotak' and kotak_remap:
@@ -563,6 +586,13 @@ class ReconEngine:
             name = rec_data.get('security_name', '')
             if isin and name and isin not in isin_name_lookup:
                 isin_name_lookup[isin] = name
+        # Pool aggregates are skipped from cust_lookup but still carry the real
+        # custodian-side security name — seed the lookup so WS-only rows under
+        # a pooled MAPIN pick up the proper fund name instead of the WS shortcode.
+        for _isin, _agg in pool_aggregates.items():
+            _name = _agg.get('security_name', '')
+            if _isin and _name and _isin not in isin_name_lookup:
+                isin_name_lookup[_isin] = _name
         # Merge WS instrument codes as fallback for ISINs not seen in custodian data
         for isin, instr_code in ws_isin_names.items():
             if isin not in isin_name_lookup:
@@ -585,6 +615,7 @@ class ReconEngine:
             self.CUSTODY_ONLY:      [],
             self.WS_ONLY:           [],
             self.UNVERIFIED:        [],
+            self.INVESTOR_ALLOC_NOT_COMMUNICATED: [],
         }
 
         for key in sorted(all_keys):
@@ -675,7 +706,10 @@ class ReconEngine:
                     row['category'] = self.MINOR_BREAK
                     results[self.MINOR_BREAK].append(row)
                 elif pend_b > 0 or pend_s > 0:
-                    if abs(-ws_qty + (pend_b - pend_s)) < 0.01:
+                    # Threshold matches the main-branch MINOR_BREAK cutoff
+                    # at line ~665 (< 1). Previously 0.01, which made WS-only
+                    # classification asymmetric with custody-only.
+                    if abs(-ws_qty + (pend_b - pend_s)) < 1:
                         row['category'] = self.PENDING_EXPLAINED
                         row['note'] = 'Pending trades explain WS-only position'
                         results[self.PENDING_EXPLAINED].append(row)
@@ -754,6 +788,8 @@ class ReconEngine:
 
                     if logical_break == 0:
                         # Trade adjustment resolved the logical break — clean match.
+                        # (Saleable may still differ due to settlement timing but
+                        #  we reconcile on logical holdings only.)
                         if pend_b_val > 0 or pend_s_val > 0:
                             row['category'] = self.PENDING_EXPLAINED
                             results[self.PENDING_EXPLAINED].append(row)
@@ -777,6 +813,72 @@ class ReconEngine:
                             row['category'] = self.UNEXPLAINED
                             results[self.UNEXPLAINED].append(row)
 
+        # ── Pool-aggregate reconciliation ─────────────────────────────────
+        # When the custodian delivers only a pool-level row for an ISIN
+        # (no per-investor breakdown) but WS tracks each underlying client
+        # separately, compare the pool total to the sum of WS investors:
+        #
+        #   • Equal  → quantity is reconciled BUT the custodian has no record
+        #              of which investor owns what. This is a GSW→Custodian
+        #              communication gap — flag as INVESTOR_ALLOC_NOT_COMMUNICATED.
+        #              These rows are kept visible (NOT moved to Clean) so ops
+        #              can chase the allocation update with the custodian.
+        #   • Differ → genuine quantity break — leave rows in Unverified/WS_Only
+        #              and let the existing classification stand.
+        if pool_aggregates:
+            from collections import defaultdict as _dd_pa
+            _by_isin: dict = _dd_pa(list)
+            for _cat_key in (self.UNVERIFIED, self.WS_ONLY):
+                for _r in list(results.get(_cat_key, [])):
+                    _by_isin[_r.get('isin', '')].append((_cat_key, _r))
+            _agg_moved = 0
+            for _isin, _group in _by_isin.items():
+                if _isin not in pool_aggregates:
+                    continue
+                _agg = pool_aggregates[_isin]
+                _ws_sum = sum(float(r.get('ws_qty', 0) or 0) for _, r in _group)
+                # Tight tolerance — expect WS clients to sum exactly to pool qty
+                if abs(_ws_sum - _agg['logical']) > 0.01:
+                    continue
+                _peers = sorted({_r.get('client', '') for _, _r in _group})
+                _peer_csv = ', '.join(_peers)
+                _note = (
+                    f"Pool '{_agg['client']}' at {_agg['source']} holds "
+                    f"{_agg['logical']:.4f} units; WS allocates this across "
+                    f"{len(_peers)} investor(s) ({_peer_csv}) and the totals "
+                    f"match. Custodian has NOT been told which investor owns "
+                    f"what — raise allocation update with custodian."
+                )
+                _agg_name = _agg.get('security_name', '')
+                for _cat_key, _r in _group:
+                    # Quantity tally is reconciled — surface zero breaks but
+                    # keep the row visible in its own bucket (not Clean).
+                    _r['source']   = _agg['source']
+                    _r['logical']  = _r.get('ws_qty', 0) or 0
+                    _r['saleable'] = _r.get('ws_qty', 0) or 0
+                    _r['logical_break']  = 0
+                    _r['saleable_break'] = 0
+                    _r['ws_adjusted']    = _r.get('ws_qty', 0) or 0
+                    if _agg_name:
+                        _r['security_name'] = _agg_name
+                    _r['pool_code']      = _agg.get('client', '')
+                    _r['pool_total']     = _agg['logical']
+                    _r['affected_clients'] = _peer_csv
+                    _r['note'] = _note
+                    _r['category'] = self.INVESTOR_ALLOC_NOT_COMMUNICATED
+                    results[self.INVESTOR_ALLOC_NOT_COMMUNICATED].append(_r)
+                    try:
+                        results[_cat_key].remove(_r)
+                    except ValueError:
+                        pass
+                    _agg_moved += 1
+            if _agg_moved:
+                logger.info(
+                    f"Pool-aggregate recon: flagged {_agg_moved} row(s) as "
+                    f"Investor Allocation Not Communicated (sum-matches "
+                    f"{len(pool_aggregates)} pool-level aggregate(s))"
+                )
+
         # ── Likely-pending-sell annotation ────────────────────────────────
         # For every break / WS-Only row with no current-day trade explanation,
         # check whether the previous business day's custody had the position.
@@ -784,11 +886,16 @@ class ReconEngine:
         # a sell that's been executed but not yet booked in WS — most common
         # operational break.
         likely_sell_count = 0
+        # Record whether prev-day snapshot was usable — the summary
+        # banner uses this to explicitly say "detection disabled" when
+        # yesterday's files aren't on disk, rather than just going quiet.
         self._prev_snapshot_status = 'ok' if prev_custody else 'missing'
         if prev_custody:
             label = prev_date_str or "previous business day"
             for cat in (self.UNEXPLAINED, self.WS_ONLY, self.CUSTODY_ONLY):
                 for r in results.get(cat, []):
+                    # Don't overwrite an existing explanation (pending trade,
+                    # MF settlement, etc. — those are more specific).
                     if r.get('note'):
                         continue
                     key = (r.get('client', ''), r.get('isin', ''))
@@ -797,11 +904,24 @@ class ReconEngine:
                         continue
                     prev_qty = float(prev.get('logical', 0) or 0)
                     today_qty = float(r.get('logical', 0) or 0)
+                    # Only annotate drops (prev > today). An increase is its own
+                    # story (fresh buy not yet booked in WS) — handled separately
+                    # by the pending_buy path we already have.
                     if prev_qty <= today_qty:
                         continue
                     drop = prev_qty - today_qty
+                    # Require that WS still reflects the pre-drop level: the
+                    # pattern of an un-booked sell is WS_qty ≈ prev_custody_qty
+                    # AND today_custody_qty < prev. If WS has already caught up
+                    # (ws_qty close to today_qty) the drop is explained elsewhere.
                     ws_qty = float(r.get('ws_qty', 0) or 0)
-                    if ws_qty + 1 < prev_qty * 0.95:
+                    # Symmetric tolerance: 5% of prev, floor 1 unit. Without a
+                    # floor, prev_qty ≤ 2 would always be flagged even when
+                    # WS already matches today's reduced custody.
+                    tol = max(1.0, prev_qty * 0.05)
+                    if abs(ws_qty - prev_qty) >= tol:
+                        # WS is materially different from prev — not a clean
+                        # un-booked sell pattern
                         continue
                     r['prev_custody_qty'] = prev_qty
                     r['unbooked_sell'] = True
@@ -815,7 +935,7 @@ class ReconEngine:
                     f"Flagged {likely_sell_count} break(s) as un-booked "
                     f"sells (custody dropped since {label})"
                 )
-        self._likely_sell_count = likely_sell_count
+        self._likely_sell_count = likely_sell_count  # picked up in summary
 
         # Write report
         Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -834,7 +954,9 @@ class ReconEngine:
             f"pending={len(results[self.PENDING_EXPLAINED])}, "
             f"breaks={len(results[self.UNEXPLAINED])}, "
             f"cust_only={len(results[self.CUSTODY_ONLY])}, "
-            f"ws_only={len(results[self.WS_ONLY])}"
+            f"ws_only={len(results[self.WS_ONLY])}, "
+            f"alloc_not_communicated="
+            f"{len(results[self.INVESTOR_ALLOC_NOT_COMMUNICATED])}"
         )
         return out_path, warnings, results
 
@@ -853,6 +975,9 @@ class ReconEngine:
             (self.MINOR_BREAK,       'Minor Breaks',          'B06820',    'FFF8E1'),
             (self.CUSTODY_ONLY,      'Custody Only',          C_BLUE_FG,   C_BLUE_BG),
             (self.WS_ONLY,           'WS Only',               C_ORANGE_FG, C_ORANGE_BG),
+            (self.INVESTOR_ALLOC_NOT_COMMUNICATED,
+                                     'Allocation Not Communicated',
+                                                              '8E3FA0',    'F4ECF8'),
             (self.UNVERIFIED,        'Unverified',            '607D8B',    'ECEFF1'),
             (self.PENDING_EXPLAINED, 'Pending Explained',     C_AMBER_FG,  C_AMBER_BG),
             (self.CLEAN,             'Clean Matches',         C_GREEN_FG,  C_GREEN_BG),
@@ -872,8 +997,7 @@ class ReconEngine:
         # Title
         ws.merge_cells('A1:H1')
         title_cell = ws['A1']
-        from core.date_format import display_date as _disp_d
-        title_cell.value = f'Holdings Reconciliation Report — {_disp_d(date_str)}'
+        title_cell.value = f'Holdings Reconciliation Report — {date_str}'
         title_cell.font  = Font(bold=True, size=14, color=C_WHITE, name='Calibri')
         title_cell.fill  = PatternFill('solid', fgColor=C_NAVY)
         title_cell.alignment = Alignment(horizontal='center', vertical='center')
@@ -893,6 +1017,8 @@ class ReconEngine:
             (self.UNEXPLAINED,       C_RED_FG,    C_RED_BG,    '✗ Requires immediate attention — break with no explanation'),
             (self.CUSTODY_ONLY,      C_RED_FG,    C_RED_BG,    '✗ In custodian but not in WS — unexplained break'),
             (self.WS_ONLY,           C_RED_FG,    C_RED_BG,    '✗ In WS but not in custodian — unexplained break'),
+            (self.INVESTOR_ALLOC_NOT_COMMUNICATED,
+                                     '8E3FA0',    'F4ECF8',    '! Pool total matches WS sum, but custodian has no per-investor allocation — raise with custodian'),
             (self.MINOR_BREAK,       'B06820',    'FFF8E1',    '⚠ Low urgency — difference < 1 unit'),
             (self.UNVERIFIED,        '607D8B',    'ECEFF1',    '? Cannot verify — custodian file missing'),
             (self.PENDING_EXPLAINED, C_AMBER_FG,  C_AMBER_BG,  '~ Difference due to pending trades'),
@@ -911,9 +1037,12 @@ class ReconEngine:
             ws.cell(r_idx, 3).fill = PatternFill('solid', fgColor=bg)
 
         total = sum(len(v) for v in results.values())
-        ws.cell(10, 1, 'TOTAL').font = Font(bold=True, name='Calibri', size=10)
-        ws.cell(10, 2, total).font   = Font(bold=True, name='Calibri', size=10)
-        ws.cell(10, 2).alignment = Alignment(horizontal='center')
+        # TOTAL row sits one row after the last category row (summary_rows
+        # starts at row 4, so total row index = 4 + len(summary_rows))
+        _total_row = 4 + len(summary_rows)
+        ws.cell(_total_row, 1, 'TOTAL').font = Font(bold=True, name='Calibri', size=10)
+        ws.cell(_total_row, 2, total).font   = Font(bold=True, name='Calibri', size=10)
+        ws.cell(_total_row, 2).alignment = Alignment(horizontal='center')
 
         # Un-booked sell banner, or diagnostic if prev snapshot was missing
         likely = getattr(self, '_likely_sell_count', 0) or 0
@@ -931,36 +1060,36 @@ class ReconEngine:
                     "were not on disk (check KEYSTONE_DATA_DIR persistence).")
             color = 'C0392B'
         if note:
-            ws.cell(10, 4, note).font = Font(
+            ws.cell(_total_row, 4, note).font = Font(
                 color=color, name='Calibri', size=10, italic=True)
-            ws.merge_cells(start_row=10, start_column=4, end_row=10, end_column=8)
-            ws.cell(10, 4).alignment = Alignment(
+            ws.merge_cells(start_row=_total_row, start_column=4,
+                           end_row=_total_row, end_column=8)
+            ws.cell(_total_row, 4).alignment = Alignment(
                 horizontal='left', vertical='center', wrap_text=True)
-            ws.row_dimensions[10].height = 28
+            ws.row_dimensions[_total_row].height = 28
 
         # Strategy breakdown for breaks
-        ws['A11'] = 'Strategy Breakdown — All Breaks (Unexplained + Custody Only + WS Only)'
-        ws['A11'].font = Font(bold=True, size=11, name='Calibri', color=C_NAVY)
+        _bk_title_row = _total_row + 1
+        _bk_hdr_row   = _total_row + 2
+        _bk_data_row  = _total_row + 3
+        ws.cell(_bk_title_row, 1,
+                'Strategy Breakdown — All Breaks (Unexplained + Custody Only '
+                '+ WS Only + Allocation Not Communicated)').font = Font(
+            bold=True, size=11, name='Calibri', color=C_NAVY)
 
-        ws['A12'] = 'Strategy'
-        ws['B12'] = 'Client'
-        ws['C12'] = 'ISIN'
-        ws['D12'] = 'Custodian Logical'
-        ws['E12'] = 'WS Adjusted'
-        ws['F12'] = 'Break'
-        ws['G12'] = 'Custodian Saleable'
-        ws['H12'] = 'WS Qty'
-
-        for col in 'ABCDEFGH':
-            c = ws[f'{col}12']
+        for col_idx, hdr in enumerate(
+            ['Strategy', 'Client', 'ISIN', 'Custodian Logical',
+             'WS Adjusted', 'Break', 'Custodian Saleable', 'WS Qty'], 1):
+            c = ws.cell(_bk_hdr_row, col_idx, hdr)
             c.font = Font(bold=True, color=C_WHITE, name='Calibri', size=10)
             c.fill = PatternFill('solid', fgColor=C_RED_FG)
             c.alignment = Alignment(horizontal='center')
 
-        r = 13
+        r = _bk_data_row
         all_breaks = (results[self.UNEXPLAINED]
                       + results[self.CUSTODY_ONLY]
-                      + results[self.WS_ONLY])
+                      + results[self.WS_ONLY]
+                      + results[self.INVESTOR_ALLOC_NOT_COMMUNICATED])
         for row in all_breaks:
             ws.cell(r, 1, pool_names.get(row.get('ws_scheme',''), row.get('ws_scheme','') or '—'))
             ws.cell(r, 2, row['client'])
@@ -985,8 +1114,9 @@ class ReconEngine:
             r += 1
 
         if not all_breaks:
-            ws.cell(13, 1, 'No breaks — all positions reconciled ✓')
-            ws.cell(13, 1).font = Font(color=C_GREEN_FG, bold=True, name='Calibri')
+            ws.cell(_bk_data_row, 1, 'No breaks — all positions reconciled ✓')
+            ws.cell(_bk_data_row, 1).font = Font(
+                color=C_GREEN_FG, bold=True, name='Calibri')
 
         # Column widths
         ws.column_dimensions['A'].width = 36
@@ -1006,6 +1136,11 @@ class ReconEngine:
         if show_pending:
             headers += ['Pending Buy', 'Pending Sell', 'WS Adjusted',
                         'Logical Break', 'Saleable Break', 'Note']
+        # Allocation-gap rows carry pool context — surface it as extra cols
+        # so ops can see the pool aggregate alongside each affected investor.
+        show_pool_cols = any(r.get('pool_code') for r in rows)
+        if show_pool_cols:
+            headers += ['Pool Code', 'Pool Total', 'Affected Investors']
 
         header_fill = PatternFill('solid', fgColor=fg)
         header_font = Font(bold=True, color=C_WHITE, name='Calibri', size=10)
@@ -1038,19 +1173,28 @@ class ReconEngine:
                     row.get('ws_adjusted', 0),
                     row.get('logical_break', 0), _sal_brk, _note,
                 ]
+            if show_pool_cols:
+                values += [row.get('pool_code', ''),
+                           row.get('pool_total', ''),
+                           row.get('affected_clients', '')]
+            # Indices of logical_break and saleable_break columns when present.
+            # 7 base cols + 4 pending cols (pending_buy, pending_sell, ws_adj,
+            # logical_break) → logical_break is col 11, saleable_break col 12.
+            _brk_cols = (11, 12) if show_pending else ()
             for c_idx, val in enumerate(values, 1):
                 cell = ws.cell(r_idx, c_idx, val)
                 cell.font = data_font
                 if fill:
                     cell.fill = fill
                 # Highlight non-zero breaks in red
-                if show_pending and c_idx in (len(values), len(values) - 1):
+                if c_idx in _brk_cols:
                     if isinstance(val, (int, float)) and val != 0:
                         cell.font = Font(bold=True, color=C_RED_FG,
                                          name='Calibri', size=10)
 
-        # Column widths
-        widths = [16, 16, 40, 10, 16, 16, 16, 14, 14, 16, 14, 14]
+        # Column widths — base 7 + 6 (pending block) + 3 (pool block)
+        widths = [16, 16, 40, 10, 16, 16, 16, 14, 14, 16, 14, 14, 30,
+                  16, 16, 50]
         for i, w in enumerate(widths[:len(headers)], 1):
             ws.column_dimensions[get_column_letter(i)].width = w
 

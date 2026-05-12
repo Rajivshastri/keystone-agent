@@ -51,6 +51,16 @@
       ]
     },
     {
+      "dealer_account": "",
+      "mapin": "GWPJ0016",
+      "pool_name": "Aristos Equity Portfolio NRO Mustafa",
+      "scheme_name": "ARISTOS EQUITY PORTFOLIO NRO MUSTAFA",
+      "custodian": "HDFC BANK LIMITED",
+      "ws_scheme_names": [
+        "aristos equity portfolio nro mustafa"
+      ]
+    },
+    {
       "dealer_account": "GSWP_WCORE",
       "mapin": "GOLDETEPMS",
       "pool_name": "Eterna Wealth Core Portfolio",
@@ -81,6 +91,14 @@
       ]
     },
     {
+      "dealer_account": "",
+      "mapin": "GWPJ0018",
+      "pool_name": "GoldStandard BJW Portfolio",
+      "scheme_name": "GOLDSTANDARD BJW PORTFOLIO",
+      "custodian": "HDFC BANK LIMITED",
+      "ws_scheme_names": []
+    },
+    {
       "dealer_account": "GSWP_FALPMS",
       "mapin": "GOLDFALPMS",
       "pool_name": "GoldStandard Focused Alpha Portfolio",
@@ -89,6 +107,96 @@
       "ws_scheme_names": [
         "goldstandard wealth pvt ltd focusedalpha",
         "goldstandard focused alpha portfolio"
+      ]
+    },
+    {
+      "dealer_account": "",
+      "mapin": "GOLDEQUPMS",
+      "pool_name": "Equicalm MFSIF Discretionary Portfolio",
+      "scheme_name": "EQUICALM MFSIF DISCRETIONARY PORTFOLIO",
+      "custodian": "AXIS BANK LTD",
+      "ws_scheme_names": [
+        "equicalm mfsif discretionary portfolio"
+      ]
+    },
+    {
+      "dealer_account": "",
+      "mapin": "GOLD57FRWD",
+      "pool_name": "GoldStandard 57Forward Diversified Momentum Portfolio",
+      "scheme_name": "GOLDSTANDARD 57FORWARD DIVERSIFIED MOMENTUM PORTFOLIO",
+      "custodian": "AXIS BANK LTD",
+      "ws_scheme_names": [
+        "goldstandard 57forward diversified momentum portfolio"
+      ]
+    },
+    {
+      "dealer_account": "",
+      "mapin": "GOLDALLCAP",
+      "pool_name": "GoldStandard AllCap Portfolio",
+      "scheme_name": "GOLDSTANDARD ALLCAP PORTFOLIO",
+      "custodian": "AXIS BANK LTD",
+      "ws_scheme_names": [
+        "goldstandard allcap portfolio"
+      ]
+    },
+    {
+      "dealer_account": "",
+      "mapin": "GOLDCTCPMS",
+      "pool_name": "Cautilya Time Cycles Quant Portfolio",
+      "scheme_name": "CAUTILYA TIME CYCLES QUANT PORTFOLIO",
+      "custodian": "AXIS BANK LTD",
+      "ws_scheme_names": [
+        "cautilya time cycles quant portfolio"
+      ]
+    },
+    {
+      "dealer_account": "",
+      "mapin": "GOLDE50PMS",
+      "pool_name": "GoldStandard E&R India 50 Portfolio",
+      "scheme_name": "GOLDSTANDARD E&R INDIA 50 PORTFOLIO",
+      "custodian": "AXIS BANK LTD",
+      "ws_scheme_names": [
+        "goldstandard e&r india 50 portfolio"
+      ]
+    },
+    {
+      "dealer_account": "",
+      "mapin": "GOLDSAIPMS",
+      "pool_name": "GoldStandard AI Portfolio",
+      "scheme_name": "GOLDSTANDARD AI PORTFOLIO",
+      "custodian": "AXIS BANK LTD",
+      "ws_scheme_names": [
+        "goldstandard ai portfolio"
+      ]
+    },
+    {
+      "dealer_account": "",
+      "mapin": "GOLDSAMPMS",
+      "pool_name": "GoldStandard AMS Resilient Portfolio",
+      "scheme_name": "GOLDSTANDARD AMS RESILIENT PORTFOLIO",
+      "custodian": "AXIS BANK LTD",
+      "ws_scheme_names": [
+        "goldstandard ams resilient portfolio"
+      ]
+    },
+    {
+      "dealer_account": "",
+      "mapin": "GSWHXOP",
+      "pool_name": "Hxgon Partners Quality Opportunities Portfolio",
+      "scheme_name": "HXGON PARTNERS QUALITY OPPORTUNITIES PORTFOLIO",
+      "custodian": "ICICI BANK LIMITED",
+      "ws_scheme_names": [
+        "hxgon partners quality opportunities portfolio"
+      ]
+    },
+    {
+      "dealer_account": "",
+      "mapin": "Tyebjee",
+      "pool_name": "Bashir Tyebjee",
+      "scheme_name": "BASHIR TYEBJEE",
+      "custodian": "",
+      "ws_scheme_names": [
+        "bashir tyebjee"
       ]
     },
     {
@@ -137,15 +245,6 @@
       "mapin": "INST22265",
       "canonical_mapin": "MYSTICM",
       "note": "MysticM ICICI SEBI UCC"
-    },
-    {
-      "dealer_account": "GSWP_ARISTOS",
-      "mapin": "24725",
-      "pool_name": "Aristos Equity Portfolio",
-      "scheme_name": "ARISTOS EQUITY PORTFOLIO",
-      "custodian": "HDFC BANK LIMITED",
-      "_note": "ICICI Securities back-office client code alias for GWPJ0004 mapin",
-      "canonical_mapin": "GWPJ0004"
     }
   ]
 }
