@@ -32,6 +32,15 @@ from .secrets import (
 EK_M365_TENANT_ID = "m365_tenant_id"
 EK_M365_CLIENT_ID = "m365_client_id"
 EK_M365_MAILBOX = "m365_mailbox"
+# Per-category mailbox slots (optional). When set, redirect every source
+# in that category to the override inbox. Empty / unset → fall back to
+# the source's own `mailbox` field, then to EK_M365_MAILBOX. Mirrors
+# Flask's recon_mailbox / nav_mailbox / prices_mailbox / trade_mailbox
+# settings exposed in app.py's _get_azure_config + _mailbox_for_source.
+EK_M365_RECON_MAILBOX = "m365_recon_mailbox"
+EK_M365_NAV_MAILBOX = "m365_nav_mailbox"
+EK_M365_PRICES_MAILBOX = "m365_prices_mailbox"
+EK_M365_TRADE_MAILBOX = "m365_trade_mailbox"
 EK_WS_USERNAME = "ws_portal_username"
 # Post-trade-recon dispatch choice: "0096" (legacy block-deals upload)
 # or "nsdl" (NSDL Steady contract notes, mapid=195). Defaults to "0096".
@@ -177,6 +186,10 @@ def setup_state() -> dict[str, Any]:
             EK_M365_TENANT_ID: extras.get(EK_M365_TENANT_ID, ""),
             EK_M365_CLIENT_ID: extras.get(EK_M365_CLIENT_ID, ""),
             EK_M365_MAILBOX: extras.get(EK_M365_MAILBOX, ""),
+            EK_M365_RECON_MAILBOX: extras.get(EK_M365_RECON_MAILBOX, ""),
+            EK_M365_NAV_MAILBOX: extras.get(EK_M365_NAV_MAILBOX, ""),
+            EK_M365_PRICES_MAILBOX: extras.get(EK_M365_PRICES_MAILBOX, ""),
+            EK_M365_TRADE_MAILBOX: extras.get(EK_M365_TRADE_MAILBOX, ""),
             EK_WS_USERNAME: extras.get(EK_WS_USERNAME, ""),
         },
         "secret_flags": {
@@ -207,18 +220,31 @@ def save_m365(
     client_id: str,
     client_secret: str | None,
     mailbox: str,
+    recon_mailbox: str = '',
+    nav_mailbox: str = '',
+    prices_mailbox: str = '',
+    trade_mailbox: str = '',
 ) -> None:
-    """Save the M365 Graph credentials.
+    """Save the M365 Graph credentials + per-category mailbox routing.
 
     `client_secret` is optional — if blank, we keep whatever is already
     in DPAPI. This lets the wizard re-save the non-secret fields without
     forcing the operator to retype the secret.
+
+    The four ``*_mailbox`` arguments are the per-category overrides used
+    by core.mailbox_routing.mailbox_for_source. Empty string means
+    "no override for this category" — sources fall back to their own
+    ``mailbox`` field, then the default ``mailbox``.
     """
     settings = load_settings()
     extras = dict(settings.extras or {})
     extras[EK_M365_TENANT_ID] = tenant_id.strip()
     extras[EK_M365_CLIENT_ID] = client_id.strip()
     extras[EK_M365_MAILBOX] = mailbox.strip()
+    extras[EK_M365_RECON_MAILBOX] = recon_mailbox.strip()
+    extras[EK_M365_NAV_MAILBOX] = nav_mailbox.strip()
+    extras[EK_M365_PRICES_MAILBOX] = prices_mailbox.strip()
+    extras[EK_M365_TRADE_MAILBOX] = trade_mailbox.strip()
     settings.extras = extras
     save_settings(settings)
     if client_secret:

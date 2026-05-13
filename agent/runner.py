@@ -163,6 +163,8 @@ def _azure_config_for_ingestor(settings: AgentSettings) -> dict | None:
     """
     from .secrets import KEY_M365_CLIENT_SECRET, get_store
     from .setup import (EK_M365_CLIENT_ID, EK_M365_MAILBOX, EK_M365_TENANT_ID,
+                        EK_M365_RECON_MAILBOX, EK_M365_NAV_MAILBOX,
+                        EK_M365_PRICES_MAILBOX, EK_M365_TRADE_MAILBOX,
                         EK_TEST_MODE_EMAIL)
 
     extras = settings.extras or {}
@@ -177,6 +179,13 @@ def _azure_config_for_ingestor(settings: AgentSettings) -> dict | None:
     # would slip through.
     if not all(cfg.values()):
         return None
+    # Per-category mailbox routing — empty string means "no override".
+    # Read by core.mailbox_routing.mailbox_for_source so each source
+    # gets queried against the right inbox.
+    cfg["recon_mailbox"]  = str(extras.get(EK_M365_RECON_MAILBOX) or "").strip()
+    cfg["nav_mailbox"]    = str(extras.get(EK_M365_NAV_MAILBOX) or "").strip()
+    cfg["prices_mailbox"] = str(extras.get(EK_M365_PRICES_MAILBOX) or "").strip()
+    cfg["trade_mailbox"]  = str(extras.get(EK_M365_TRADE_MAILBOX) or "").strip()
     # Optional: test-mode email diverts every outgoing message to one
     # address. Empty/missing → normal mail flow.
     cfg["test_mode_email"] = str(extras.get(EK_TEST_MODE_EMAIL) or "").strip()
@@ -1012,6 +1021,7 @@ def _pre_reconciliation(
     if all(azure_cfg.values()):
         try:
             from core.email_ingestor import EmailIngestor
+            from core.mailbox_routing import group_sources_by_mailbox
 
             fm = _file_manager(settings.workdir)
             sources = _load_config_json("sources.json").get("sources", [])
@@ -1024,15 +1034,36 @@ def _pre_reconciliation(
             else:
                 log(f"Pre-fetch: full email fetch for {date_str} (no prior fetch)")
 
+            # Group sources by the mailbox they resolve to (recon /
+            # nav / prices / trade categories). Each group gets its
+            # own fetch call with the right mailbox_override so the
+            # ingestor queries the correct M365 inbox per category.
+            # An empty-string key means "use ingestor.mailbox default".
+            mailbox_groups = group_sources_by_mailbox(all_sources, azure_cfg)
+            if len(mailbox_groups) > 1:
+                log(f"Pre-fetch: sources span {len(mailbox_groups)} mailbox(es) — "
+                    + ", ".join(f"{mb or 'default'}={len(srcs)}"
+                                 for mb, srcs in mailbox_groups.items()))
+
             ingestor = EmailIngestor(azure_cfg)
-            results = ingestor.fetch_for_range(
-                date_from=date_str,
-                date_to=date_str,
-                sources=all_sources,
-                file_manager=fm,
-                log_callback=lambda msg, **kw: log(f"Pre-fetch: {msg}", **kw),
-                since=since,
-            )
+            results = []
+            for mb_override, src_subset in mailbox_groups.items():
+                _mb_label = mb_override or "default"
+                try:
+                    batch = ingestor.fetch_for_range(
+                        date_from=date_str,
+                        date_to=date_str,
+                        sources=src_subset,
+                        file_manager=fm,
+                        log_callback=lambda msg, **kw: log(
+                            f"Pre-fetch[{_mb_label}]: {msg}", **kw),
+                        since=since,
+                        mailbox_override=mb_override,
+                    )
+                except Exception as e:
+                    log(f"Pre-fetch[{_mb_label}] crashed: {e}", level="error")
+                    batch = [{"status": "error", "message": str(e)}]
+                results.extend(batch)
 
             ok = sum(1 for r in results if r.get("status") == "ok")
             err = sum(1 for r in results if r.get("status") == "error")

@@ -420,11 +420,30 @@ def create_app() -> FastAPI:
     <input type="text" id="m365_tenant_id" name="m365_tenant_id" value="{extras.get('m365_tenant_id','')}" required>
     <label for="m365_client_id" style="margin-top:12px">Client (application) ID</label>
     <input type="text" id="m365_client_id" name="m365_client_id" value="{extras.get('m365_client_id','')}" required>
-    <label for="m365_mailbox" style="margin-top:12px">Shared mailbox address</label>
+    <label for="m365_mailbox" style="margin-top:12px">Default mailbox address</label>
     <input type="text" id="m365_mailbox" name="m365_mailbox" value="{extras.get('m365_mailbox','')}" required>
+    <p class="muted" style="margin:4px 0 0">Used for sending operator email and as the fallback inbox for any source not covered by a category override below.</p>
     <label for="m365_client_secret" style="margin-top:12px">Client secret</label>
     <input type="password" id="m365_client_secret" name="m365_client_secret" placeholder="(enter once to save)" autocomplete="off">
     <div style="margin-top:4px">{_secret_state(secret_flags.get('m365_client_secret', False))}</div>
+
+    <div style="margin-top:18px; padding-top:14px; border-top:1px solid #e6e9f0">
+      <div style="font-size:12px; font-weight:700; color:#2a4fa8; margin-bottom:4px">Per-category mailbox routing</div>
+      <p class="muted" style="margin:0 0 12px">Files now arrive in dedicated inboxes per category. Set each slot to the address that receives that kind of email. Leave blank to fall back to the default mailbox above.</p>
+
+      <label for="m365_recon_mailbox">Recon inbox <span class="muted">(custodian holdings, bank statements, broker CNs)</span></label>
+      <input type="text" id="m365_recon_mailbox" name="m365_recon_mailbox" value="{extras.get('m365_recon_mailbox','')}" placeholder="e.g. recon@thegoldstandard.in">
+
+      <label for="m365_nav_mailbox" style="margin-top:12px">NAV inbox <span class="muted">(Value Research)</span></label>
+      <input type="text" id="m365_nav_mailbox" name="m365_nav_mailbox" value="{extras.get('m365_nav_mailbox','')}" placeholder="e.g. vr@thegoldstandard.in">
+
+      <label for="m365_prices_mailbox" style="margin-top:12px">Prices inbox <span class="muted">(Vidal)</span></label>
+      <input type="text" id="m365_prices_mailbox" name="m365_prices_mailbox" value="{extras.get('m365_prices_mailbox','')}" placeholder="e.g. vidal@thegoldstandard.in">
+
+      <label for="m365_trade_mailbox" style="margin-top:12px">Trade inbox <span class="muted">(dealer, NSDL, exchange, broker CN)</span></label>
+      <input type="text" id="m365_trade_mailbox" name="m365_trade_mailbox" value="{extras.get('m365_trade_mailbox','')}" placeholder="leave blank to use default">
+    </div>
+
     <button type="submit" style="margin-top:16px">Save M365 credentials</button>
   </form>
 </div>
@@ -506,6 +525,10 @@ def create_app() -> FastAPI:
                 client_id=str(form.get("m365_client_id", "")),
                 client_secret=str(form.get("m365_client_secret", "")) or None,
                 mailbox=str(form.get("m365_mailbox", "")),
+                recon_mailbox=str(form.get("m365_recon_mailbox", "")),
+                nav_mailbox=str(form.get("m365_nav_mailbox", "")),
+                prices_mailbox=str(form.get("m365_prices_mailbox", "")),
+                trade_mailbox=str(form.get("m365_trade_mailbox", "")),
             )
         except Exception as e:  # noqa: BLE001
             return RedirectResponse(url=f"/setup?err={e}", status_code=303)
