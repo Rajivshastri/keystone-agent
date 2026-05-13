@@ -382,6 +382,20 @@ def _failed_push(
 ) -> RunPush:
     log(f"Runner error: {type(err).__name__}: {err}", level="error")
     logger.exception(f"Job {job.id} failed")
+    # Belt-and-suspenders: also print to stderr directly so the traceback
+    # is captured even when uvicorn/agent logging suppresses the
+    # exception logger. The PyInstaller bundle's stderr is redirected to
+    # agent.err.log by the launcher.
+    import sys as _sys
+    print(f"\n=== Runner exception for job {job.id} ({recon_type}/{recon_date}) ===",
+          file=_sys.stderr, flush=True)
+    traceback.print_exc(file=_sys.stderr)
+    _sys.stderr.flush()
+    # Also fold the traceback into the structured log so it lands in the
+    # CP RunPush payload (operators viewing the failed run in the
+    # dashboard get the same diagnostic).
+    for line in traceback.format_exc().splitlines():
+        log(f"  {line}", level="error")
     return RunPush(
         job_id=job.id,
         type=recon_type,
