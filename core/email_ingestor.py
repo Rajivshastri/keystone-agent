@@ -1114,6 +1114,30 @@ class EmailIngestor:
                 (r'(\d{1,2})[_\-](\d{1,2})[_\-](\d{4})', None),  # D_M_YYYY / DD-MM-YYYY
             ]
 
+        # Proximity reference for filename-date sanity check.
+        # Originally this used `requested_date`, but that breaks catch-up
+        # fetches: when the ingestor pulls multiple weeks of unread mail
+        # in one batch, the filename dates on older emails are weeks off
+        # from `requested_date` (today) and get rejected — falling
+        # through to the requested_date fallback dumps them all into
+        # today's folder.
+        # The email's received_date is always close to the file's data
+        # date (the custodian sends the file shortly after generating
+        # it), so it's the right anchor for the sanity check regardless
+        # of when the operator fetched.
+        proximity_ref = None
+        if received_date:
+            try:
+                _r = datetime.strptime(received_date[:19], '%Y-%m-%dT%H:%M:%S')
+                proximity_ref = (_r + timedelta(hours=5, minutes=30)).date()
+            except ValueError:
+                pass
+        if proximity_ref is None:
+            try:
+                proximity_ref = datetime.strptime(requested_date, '%Y-%m-%d').date()
+            except ValueError:
+                proximity_ref = None
+
         for pattern, fmt in patterns:
             for m in re.finditer(pattern, filename):
                 try:
@@ -1129,15 +1153,18 @@ class EmailIngestor:
                         file_dt = datetime.strptime(
                             f"{g[0].zfill(2)}/{g[1].zfill(2)}/{g[2]}", '%d/%m/%Y'
                         )
-                    req_dt = datetime.strptime(requested_date, '%Y-%m-%d')
-                    if abs((file_dt - req_dt).days) <= 7:
+                    if proximity_ref is None or abs((file_dt.date() - proximity_ref).days) <= 7:
                         holding_dt = file_dt - timedelta(days=effective_offset)
                         return holding_dt.strftime('%Y-%m-%d')
                 except (ValueError, IndexError):
                     continue
 
         # ── Non-bank fallback: received date with effective offset ───
-        if not is_bank and offset and received_date:
+        # Previously gated on `offset` being truthy, which silently
+        # disabled this branch for sources with offset=0 (e.g. Axis
+        # holdings). Dropped the guard — any non-bank source with a
+        # received_date can use this fallback safely.
+        if not is_bank and received_date:
             try:
                 rcvd_dt = datetime.strptime(received_date[:19], '%Y-%m-%dT%H:%M:%S')
                 rcvd_ist = rcvd_dt + timedelta(hours=5, minutes=30)
