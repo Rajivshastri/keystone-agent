@@ -101,6 +101,21 @@ class ControlPlaneClient:
         )
         return RunPushResponse.model_validate(resp)
 
+    def push_task(self, task: "TaskPush") -> "TaskPushResponse":
+        """Push a non-recon task result to the control plane.
+
+        Mirrors push_run but targets /api/v1/agent/tasks. Used by
+        client_onboard, pool_create, welcome_email, ws_upload,
+        fees_compute, fees_email, bod_run, eod_run.
+        """
+        from .protocol import TaskPush, TaskPushResponse  # local to avoid cycles
+        resp = self._post_json(
+            "/api/v1/agent/tasks",
+            task.model_dump(),
+            authed=True,
+        )
+        return TaskPushResponse.model_validate(resp)
+
     def upload_file_request(
         self, upload_path: str, filename: str, data: bytes
     ) -> dict[str, Any]:

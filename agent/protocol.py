@@ -50,12 +50,23 @@ class PollRequest(BaseModel):
 
 
 JobType = Literal[
+    # Reconciliation engines — produce RunPush results
     "holdings_recon",
     "bank_recon",
     "trade_recon",
+    # Maintenance / utility jobs — also use RunPush (status only)
     "fetch_emails",
     "ws_download",
     "diagnostic_bundle",
+    # New task-style jobs — produce TaskPush results
+    "client_onboard",       # CML → registry → WS account creation → GST → welcome email
+    "pool_create",          # Headless 3-step + broker invitations
+    "welcome_email",        # Resend welcome email for existing client(s)
+    "ws_upload",            # Upload a file via WS portal mapper (0096 / NSDL / GST / etc.)
+    "fees_compute",         # Recompute fee earnings for a date range
+    "fees_email",           # Email fee statement PDFs to entities
+    "bod_run",              # Beginning-of-day pipeline (price upload + NAV + flags)
+    "eod_run",              # End-of-day pipeline (file checks + recon summary email)
 ]
 
 
@@ -150,6 +161,43 @@ class RunPush(BaseModel):
 class RunPushResponse(BaseModel):
     ok: bool
     run_id: str | None
+    duplicate: bool = False
+
+
+# ── Tasks (push) ─────────────────────────────────────────────────────── #
+#
+# Tasks are jobs that aren't reconciliations — client onboarding, pool
+# creation, WS uploads, welcome-email resends, etc. They reuse the
+# poll → execute → push pipeline but produce a different result shape
+# (no recon counts, no recon_date semantics).
+
+TaskType = Literal[
+    "client_onboard",
+    "pool_create",
+    "welcome_email",
+    "ws_upload",
+    "fees_compute",
+    "fees_email",
+    "bod_run",
+    "eod_run",
+]
+TaskStatus = Literal["ok", "partial", "failed"]
+
+
+class TaskPush(BaseModel):
+    """Result of a non-reconciliation task. Mirrors RunPush in spirit
+    but carries a flexible result dict instead of recon counts."""
+    job_id: str | None
+    type: TaskType
+    status: TaskStatus
+    result: dict[str, Any] = Field(default_factory=dict)
+    attachments_meta: dict[str, Any] = Field(default_factory=dict)
+    log_lines: list[LogLine] = Field(default_factory=list, max_length=1000)
+
+
+class TaskPushResponse(BaseModel):
+    ok: bool
+    task_id: str | None
     duplicate: bool = False
 
 

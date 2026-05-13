@@ -56,6 +56,9 @@ from .protocol import (
     ReconType,
     RunPush,
     RunStatus,
+    TaskPush,
+    TaskStatus,
+    TaskType,
 )
 from .whitelist import (
     attachment_metadata,
@@ -420,11 +423,16 @@ def _failed_push(
 # ── Public dispatch ────────────────────────────────────────────────── #
 
 
-def execute_job(job: PollJob) -> RunPush:
-    """Top-level dispatch. Map a PollJob to a RunPush.
+def execute_job(job: PollJob):
+    """Top-level dispatch. Map a PollJob to a RunPush or TaskPush.
 
-    Raises no exceptions — every failure path returns a `status=failed`
-    RunPush so the caller's push-to-cloud loop is trivial.
+    Returns RunPush for recon-style jobs (holdings/bank/trade/fetch/
+    ws_download/diagnostic) and TaskPush for the task-style jobs
+    (client_onboard, pool_create, welcome_email, ws_upload,
+    fees_compute, fees_email, bod_run, eod_run).
+
+    Raises no exceptions — every failure path returns a status=failed
+    result so the caller's push-to-cloud loop is trivial.
     """
     if job.type == "holdings_recon":
         return _run_holdings(job)
@@ -438,7 +446,24 @@ def execute_job(job: PollJob) -> RunPush:
         return _run_ws_download(job)
     if job.type == "diagnostic_bundle":
         return _run_diagnostic_bundle(job)
-    # Unknown type — record it as a failure and let the server see it
+    # ── Task-style jobs ───────────────────────────────────────────── #
+    if job.type == "client_onboard":
+        return _run_client_onboard(job)
+    if job.type == "pool_create":
+        return _run_pool_create(job)
+    if job.type == "welcome_email":
+        return _run_welcome_email(job)
+    if job.type == "ws_upload":
+        return _run_ws_upload(job)
+    if job.type == "fees_compute":
+        return _run_fees_compute(job)
+    if job.type == "fees_email":
+        return _run_fees_email(job)
+    if job.type == "bod_run":
+        return _run_bod(job)
+    if job.type == "eod_run":
+        return _run_eod(job)
+    # Unknown type — record it as a failed RunPush so the server sees it
     log = _LogCollector()
     return _failed_push(
         job, "holdings", datetime.now(timezone.utc).strftime("%Y-%m-%d"),
@@ -2485,3 +2510,394 @@ def _cmd_master_custody_upsert(payload: dict[str, Any]) -> CommandResult:
         "mode": "update" if existed else "create",
         "source_file": str(path.name),
     })
+
+
+# ════════════════════════════════════════════════════════════════════ #
+# Task-style handlers (return TaskPush). These mirror the workflows
+# that have lived in app.py and now run agent-side.
+# ════════════════════════════════════════════════════════════════════ #
+
+
+def _task_push(job: PollJob, task_type: TaskType,
+               status: TaskStatus, log: "_LogCollector",
+               result: dict | None = None,
+               attachments: dict | None = None) -> TaskPush:
+    return TaskPush(
+        job_id=job.id,
+        type=task_type,
+        status=status,
+        result=result or {},
+        attachments_meta=attachments or {},
+        log_lines=log.as_log_lines(),
+    )
+
+
+def _task_failed(job: PollJob, task_type: TaskType,
+                 log: "_LogCollector", err: BaseException,
+                 partial_result: dict | None = None) -> TaskPush:
+    log(f"Task error: {type(err).__name__}: {err}", level="error")
+    logger.exception(f"Task {job.id} ({task_type}) failed")
+    import sys as _sys
+    print(f"\n=== Task exception for job {job.id} ({task_type}) ===",
+          file=_sys.stderr, flush=True)
+    traceback.print_exc(file=_sys.stderr)
+    _sys.stderr.flush()
+    for line in traceback.format_exc().splitlines():
+        log(f"  {line}", level="error")
+    return TaskPush(
+        job_id=job.id,
+        type=task_type,
+        status="failed",
+        result={**(partial_result or {}), "error": str(err),
+                 "error_type": type(err).__name__},
+        attachments_meta={},
+        log_lines=log.as_log_lines(),
+    )
+
+
+# ── client_onboard ─────────────────────────────────────────────────── #
+
+
+def _run_client_onboard(job: PollJob) -> TaskPush:
+    """Create a client end-to-end: registry → WS Account Creation
+    (mapid=1) → GST onboarding (mapid=1033) → welcome email.
+
+    Mirrors Flask's /api/clients/upload-direct.
+
+    Payload: {client: {...form fields including tax_pan, names,
+    addresses, mandate, _pools, ...}}
+    """
+    log = _LogCollector()
+    payload = job.payload or {}
+    client_data = payload.get("client") or {}
+    if not client_data:
+        return _task_failed(job, "client_onboard", log,
+                             ValueError("payload.client is empty"))
+    try:
+        from core.client_onboarding import (
+            upsert_client, build_client_xls, get_client, init_db,
+        )
+        from ws_uploader import (
+            upload_client_master, upload_client_gst, gst_authorize_pending,
+            ws_lookup_client_id_by_pan,
+        )
+        from core.gst_setup import build_gst_xlsx_for_client
+        init_db()
+
+        # 1. Upsert into local registry
+        row_id = upsert_client(client_data)
+        log(f"Client upserted to registry — row_id={row_id}")
+
+        # 2. Build the WS Account Creation XLS
+        xls_path = build_client_xls(row_id)
+        log(f"Account Creation XLS built: {xls_path.name}")
+
+        # 3. Upload to WS (mapid=1)
+        up = upload_client_master(str(xls_path))
+        log(f"WS Account Creation: {up.message}")
+        if not up.ok:
+            return _task_push(job, "client_onboard", "failed", log, result={
+                "stage": "account_creation",
+                "row_id": row_id,
+                "message": up.message,
+                "detail": up.detail,
+            })
+
+        # 4. GST onboarding (PAN → CLIENTID → build GST xlsx → upload → authorize)
+        pan = (client_data.get("tax_pan") or "").strip().upper()
+        gst_result: dict = {"ok": False, "stage": "skipped"}
+        if pan:
+            try:
+                client_id = ws_lookup_client_id_by_pan(pan)
+                if client_id:
+                    log(f"WS CLIENTID for PAN {pan} = {client_id}")
+                    gst_dir = Path(os.environ.get('KEYSTONE_DATA_DIR') or
+                                    str(Path(__file__).parent.parent)) / 'data' / 'client_uploads'
+                    gst_path = gst_dir / f"GST_{pan}_{row_id}.xlsx"
+                    db_client = get_client(row_id) or client_data
+                    gst_path, state_source = build_gst_xlsx_for_client(
+                        db_client, client_id=client_id, output_path=gst_path,
+                    )
+                    gst_up = upload_client_gst(str(gst_path))
+                    log(f"GST upload: {gst_up.message}")
+                    if gst_up.ok:
+                        gst_auth = gst_authorize_pending()
+                        log(f"GST authorise: {gst_auth.message}")
+                        gst_result = {
+                            "ok": gst_auth.ok,
+                            "client_id": client_id,
+                            "state_source": state_source,
+                            "upload_message": gst_up.message,
+                            "authorize_message": gst_auth.message,
+                        }
+                    else:
+                        gst_result = {
+                            "ok": False, "stage": "upload",
+                            "client_id": client_id,
+                            "message": gst_up.message,
+                            "detail": gst_up.detail,
+                        }
+                else:
+                    gst_result = {"ok": False, "stage": "lookup",
+                                   "message": f"CLIENTID not found for PAN {pan}"}
+            except Exception as e:  # noqa: BLE001
+                gst_result = {"ok": False, "stage": "exception",
+                               "message": str(e)}
+                log(f"GST step errored: {e}", level="warning")
+
+        # 5. Welcome email (fire-and-forget — best effort)
+        welcome_result: dict = {"ok": False, "stage": "skipped"}
+        try:
+            from core.client_welcome_email import (
+                send_welcome_emails, pools_for_client,
+            )
+            from core.email_ingestor import EmailIngestor
+            settings = load_settings()
+            az = _build_azure_cfg(settings)
+            if az:
+                ing = EmailIngestor(az)
+                db_client = get_client(row_id) or client_data
+                pools = pools_for_client(db_client)
+                if pools:
+                    res = send_welcome_emails(db_client, pools, email_ingestor=ing)
+                    welcome_result = {
+                        "ok": True,
+                        "sent":    len(res.get("sent",    [])),
+                        "skipped": len(res.get("skipped", [])),
+                        "failed":  len(res.get("failed",  [])),
+                    }
+                    log(f"Welcome email: sent={welcome_result['sent']} "
+                        f"skipped={welcome_result['skipped']} "
+                        f"failed={welcome_result['failed']}")
+                else:
+                    welcome_result = {"ok": False, "stage": "no_pools"}
+            else:
+                welcome_result = {"ok": False, "stage": "m365_not_configured"}
+        except Exception as e:  # noqa: BLE001
+            welcome_result = {"ok": False, "stage": "exception", "message": str(e)}
+            log(f"Welcome email errored: {e}", level="warning")
+
+        status: TaskStatus = "ok" if gst_result.get("ok") else "partial"
+        return _task_push(job, "client_onboard", status, log, result={
+            "row_id": row_id,
+            "ws_account_creation": {
+                "ok": True, "message": up.message,
+                "posting_id": up.posting_id, "file": xls_path.name,
+            },
+            "gst": gst_result,
+            "welcome_email": welcome_result,
+        }, attachments={"xls": xls_path.name})
+    except Exception as e:  # noqa: BLE001
+        return _task_failed(job, "client_onboard", log, e)
+
+
+# ── welcome_email ──────────────────────────────────────────────────── #
+
+
+def _run_welcome_email(job: PollJob) -> TaskPush:
+    """Re-send the welcome email for an existing client. Payload:
+    {row_id: int} or {row_ids: [int, ...]} for batch."""
+    log = _LogCollector()
+    payload = job.payload or {}
+    ids = payload.get("row_ids") or ([payload["row_id"]] if "row_id" in payload else [])
+    if not ids:
+        return _task_failed(job, "welcome_email", log,
+                             ValueError("payload requires row_id or row_ids"))
+    try:
+        from core.client_onboarding import get_client, init_db
+        from core.client_welcome_email import (
+            send_welcome_emails, pools_for_client,
+        )
+        from core.email_ingestor import EmailIngestor
+        init_db()
+        settings = load_settings()
+        az = _build_azure_cfg(settings)
+        if not az:
+            return _task_failed(job, "welcome_email", log,
+                                 RuntimeError("M365 not configured"))
+        ing = EmailIngestor(az)
+        per_client: list[dict] = []
+        for rid in ids:
+            client = get_client(int(rid))
+            if not client:
+                per_client.append({"row_id": rid, "ok": False, "error": "not_found"})
+                log(f"Client {rid}: not found", level="warning")
+                continue
+            pools = pools_for_client(client)
+            if not pools:
+                per_client.append({"row_id": rid, "ok": False, "error": "no_pools"})
+                log(f"Client {rid}: no pools to email")
+                continue
+            res = send_welcome_emails(client, pools, email_ingestor=ing)
+            per_client.append({
+                "row_id": rid,
+                "ok": True,
+                "sent":    len(res.get("sent",    [])),
+                "skipped": len(res.get("skipped", [])),
+                "failed":  len(res.get("failed",  [])),
+            })
+            log(f"Client {rid}: sent={per_client[-1]['sent']} "
+                f"skipped={per_client[-1]['skipped']} "
+                f"failed={per_client[-1]['failed']}")
+        all_ok = all(c.get("ok") for c in per_client) and per_client
+        status: TaskStatus = "ok" if all_ok else ("partial" if any(c.get("ok") for c in per_client) else "failed")
+        return _task_push(job, "welcome_email", status, log,
+                           result={"per_client": per_client})
+    except Exception as e:  # noqa: BLE001
+        return _task_failed(job, "welcome_email", log, e)
+
+
+# ── ws_upload ──────────────────────────────────────────────────────── #
+
+
+def _run_ws_upload(job: PollJob) -> TaskPush:
+    """Upload a file via a WS portal mapper.
+
+    Payload: {kind: "0096"|"nsdl"|"gst"|"price"|"corp_action"|"client_master",
+              file_path: str, ...kind-specific extras...}
+    """
+    log = _LogCollector()
+    payload = job.payload or {}
+    kind = (payload.get("kind") or "").strip().lower()
+    file_path = (payload.get("file_path") or "").strip()
+    if not kind or not file_path:
+        return _task_failed(job, "ws_upload", log,
+                             ValueError("payload requires kind and file_path"))
+    try:
+        import ws_uploader as _wu
+        dispatch = {
+            "0096":          getattr(_wu, "upload_0096", None),
+            "nsdl":          getattr(_wu, "upload_nsdl", None),
+            "gst":           getattr(_wu, "upload_client_gst", None),
+            "client_master": getattr(_wu, "upload_client_master", None),
+            "price":         getattr(_wu, "upload_price_csv", None),
+            "corp_action":   getattr(_wu, "upload_corp_action", None),
+        }
+        fn = dispatch.get(kind)
+        if fn is None:
+            return _task_failed(job, "ws_upload", log,
+                                 ValueError(f"unknown ws_upload kind: {kind!r}"))
+        log(f"Uploading {file_path} via WS {kind} mapper...")
+        up_result = fn(file_path)
+        status: TaskStatus = "ok" if getattr(up_result, "ok", False) else "failed"
+        result = {
+            "kind":       kind,
+            "file":       Path(file_path).name,
+            "message":    getattr(up_result, "message", ""),
+            "detail":     getattr(up_result, "detail", ""),
+            "posting_id": getattr(up_result, "posting_id", ""),
+        }
+        # GST upload: also fire authorise step
+        if kind == "gst" and status == "ok":
+            try:
+                auth = _wu.gst_authorize_pending()
+                result["authorize_message"] = auth.message
+                if not auth.ok:
+                    status = "partial"
+            except Exception as e:  # noqa: BLE001
+                result["authorize_error"] = str(e)
+                status = "partial"
+        return _task_push(job, "ws_upload", status, log, result=result)
+    except Exception as e:  # noqa: BLE001
+        return _task_failed(job, "ws_upload", log, e)
+
+
+# ── pool_create ────────────────────────────────────────────────────── #
+
+
+def _run_pool_create(job: PollJob) -> TaskPush:
+    """Run the headless 3-step pool creation + (optionally) broker
+    invitations. Payload mirrors Flask /api/pool-creator/create body."""
+    log = _LogCollector()
+    payload = job.payload or {}
+    try:
+        from core.pool_creator import create_pool_headless
+        log(f"Creating pool: {payload.get('display_name') or payload.get('pool_id') or '?'}")
+        result = create_pool_headless(payload, log_fn=log)
+        ok = bool(result.get("ok"))
+        return _task_push(job, "pool_create",
+                           "ok" if ok else "failed", log, result=result)
+    except Exception as e:  # noqa: BLE001
+        return _task_failed(job, "pool_create", log, e)
+
+
+# ── fees_compute ───────────────────────────────────────────────────── #
+
+
+def _run_fees_compute(job: PollJob) -> TaskPush:
+    """Compute fee earnings for a date range. Payload:
+    {from_date: 'YYYY-MM-DD', to_date: 'YYYY-MM-DD', use_cache: bool}"""
+    log = _LogCollector()
+    payload = job.payload or {}
+    from_date = payload.get("from_date")
+    to_date   = payload.get("to_date")
+    if not from_date or not to_date:
+        return _task_failed(job, "fees_compute", log,
+                             ValueError("payload requires from_date and to_date"))
+    try:
+        from core.fee_calculator import compute_fees_daily
+        log(f"Computing fees for {from_date} → {to_date}")
+        result = compute_fees_daily(
+            from_date, to_date,
+            use_cache=bool(payload.get("use_cache", True)),
+        )
+        log(f"Fees computed: {len(result.get('earners', []))} earner(s)")
+        return _task_push(job, "fees_compute", "ok", log,
+                           result={"from_date": from_date, "to_date": to_date,
+                                    "earners_count": len(result.get("earners", [])),
+                                    "summary": result.get("summary", {})})
+    except Exception as e:  # noqa: BLE001
+        return _task_failed(job, "fees_compute", log, e)
+
+
+# ── fees_email ─────────────────────────────────────────────────────── #
+
+
+def _run_fees_email(job: PollJob) -> TaskPush:
+    """Email fee statement PDFs to entities. Payload:
+    {from_date, to_date, entity_names: [...] | None (= all),
+     override_recipients: {entity_name: [email,...]}}"""
+    log = _LogCollector()
+    payload = job.payload or {}
+    try:
+        from core.fee_entity_mailer import send_to_all
+        from core.email_ingestor import EmailIngestor
+        settings = load_settings()
+        az = _build_azure_cfg(settings)
+        if not az:
+            return _task_failed(job, "fees_email", log,
+                                 RuntimeError("M365 not configured"))
+        ing = EmailIngestor(az)
+        log(f"Sending fee statements: {payload.get('from_date')} → {payload.get('to_date')}")
+        result = send_to_all(
+            from_date=payload.get("from_date", ""),
+            to_date=payload.get("to_date", ""),
+            email_ingestor=ing,
+            entity_names=payload.get("entity_names"),
+            recipient_overrides=payload.get("override_recipients") or {},
+        )
+        status: TaskStatus = "ok" if result.get("ok") else "partial"
+        return _task_push(job, "fees_email", status, log, result=result)
+    except Exception as e:  # noqa: BLE001
+        return _task_failed(job, "fees_email", log, e)
+
+
+# ── bod_run / eod_run (stubs for now — fill in Phase 2e) ───────────── #
+
+
+def _run_bod(job: PollJob) -> TaskPush:
+    log = _LogCollector()
+    log("BoD pipeline not yet implemented in agent (Phase 2e). "
+        "Engine code lives in core/bod_log.py + price/NAV uploaders.",
+        level="warning")
+    return _task_push(job, "bod_run", "failed", log,
+                       result={"stage": "not_implemented"})
+
+
+def _run_eod(job: PollJob) -> TaskPush:
+    log = _LogCollector()
+    log("EoD pipeline not yet implemented in agent (Phase 2e). "
+        "Engine code lives in core/eod_log.py + recon summary mailer.",
+        level="warning")
+    return _task_push(job, "eod_run", "failed", log,
+                       result={"stage": "not_implemented"})

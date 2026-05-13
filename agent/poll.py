@@ -17,7 +17,9 @@ from datetime import datetime, timezone
 from .config import AgentSettings, load_settings
 from .local_runs import get_store as get_local_runs
 from .outbox import get_outbox
-from .protocol import AgentCommand, FileRequestJob, HealthPing, PollJob, RunPush
+from .protocol import (
+    AgentCommand, FileRequestJob, HealthPing, PollJob, RunPush, TaskPush,
+)
 from .runner import execute_command, execute_job
 from .transport import ControlPlaneClient, TransportError
 
@@ -260,15 +262,24 @@ class PollLoop:
     # ---- dispatch ---- #
 
     def _execute_and_push(self, job: PollJob) -> None:
-        """Run one job end-to-end: execute, push, fall back to outbox."""
+        """Run one job end-to-end: execute, push, fall back to outbox.
+
+        execute_job returns RunPush for recon-style jobs and TaskPush
+        for task-style jobs (client_onboard, ws_upload, etc.). We
+        dispatch the push to the right endpoint based on the result
+        type.
+        """
         logger.info(f"Executing job {job.id} type={job.type}")
         try:
-            run = execute_job(job)
+            result = execute_job(job)
         except Exception as e:  # noqa: BLE001
             logger.exception(f"Runner crashed on job {job.id}: {e}")
             return
 
-        self._push_run(run)
+        if isinstance(result, TaskPush):
+            self._push_task(result)
+        else:
+            self._push_run(result)
 
     def _push_run(self, run: RunPush) -> None:
         """Attempt immediate push; fall back to outbox on failure."""
@@ -298,6 +309,40 @@ class PollLoop:
         except Exception as e:  # noqa: BLE001
             logger.exception(f"Outbox enqueue failed: {e}")
 
+    def _push_task(self, task: TaskPush) -> None:
+        """Push a task result (client_onboard, ws_upload, etc.) to the
+        control plane. Mirrors _push_run but hits /agent/tasks. Falls
+        back to the outbox on transport failure — when the outbox
+        drains we attempt RunPush first then TaskPush based on payload
+        shape (the outbox is shared)."""
+        try:
+            resp = self._client.push_task(task)
+            if resp.ok:
+                logger.info(
+                    f"Task pushed to control plane: {task.type} "
+                    f"status={task.status} task_id={resp.task_id}"
+                )
+                return
+            logger.warning(
+                f"Task push returned ok=false — queueing to outbox: {task.type}"
+            )
+        except TransportError as e:
+            logger.warning(
+                f"Task push failed ({e}) — queueing to outbox: {task.type}"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception(
+                f"Task push unexpected error — queueing to outbox: {e}"
+            )
+        # Fall-through: enqueue. Mark the payload so the outbox drainer
+        # can distinguish task from run when it retries.
+        try:
+            payload = task.model_dump()
+            payload["__kind__"] = "task"
+            get_outbox().enqueue(payload)
+        except Exception as e:  # noqa: BLE001
+            logger.exception(f"Outbox enqueue failed: {e}")
+
     def _drain_outbox(self) -> None:
         """Retry everything in the outbox, FIFO.
 
@@ -312,13 +357,32 @@ class PollLoop:
             return
         logger.info(f"Draining {len(items)} outbox item(s)")
         for item in items:
+            # Distinguish task from run payloads. Task items have the
+            # __kind__ sentinel added by _push_task before enqueue.
+            is_task = (isinstance(item.payload, dict)
+                        and item.payload.get("__kind__") == "task")
             try:
-                run = RunPush.model_validate(item.payload)
+                if is_task:
+                    raw = {k: v for k, v in item.payload.items() if k != "__kind__"}
+                    msg = TaskPush.model_validate(raw)
+                else:
+                    msg = RunPush.model_validate(item.payload)
             except Exception as e:  # noqa: BLE001
                 logger.error(f"Outbox item {item.id} has invalid payload, dropping: {e}")
                 outbox.delete(item.id)
                 continue
             try:
+                if isinstance(msg, TaskPush):
+                    resp = self._client.push_task(msg)
+                    if resp.ok:
+                        outbox.delete(item.id)
+                        logger.info(
+                            f"Outbox item {item.id} flushed (task): {msg.type}"
+                        )
+                    else:
+                        outbox.bump_attempt(item.id, "task push returned ok=false")
+                    continue
+                run = msg
                 resp = self._client.push_run(run)
                 if resp.ok:
                     outbox.delete(item.id)
