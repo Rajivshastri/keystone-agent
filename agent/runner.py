@@ -463,6 +463,14 @@ def execute_job(job: PollJob):
         return _run_bod(job)
     if job.type == "eod_run":
         return _run_eod(job)
+    if job.type == "config_get":
+        return _run_config_get(job)
+    if job.type == "config_set":
+        return _run_config_set(job)
+    if job.type == "bank_history_query":
+        return _run_bank_history_query(job)
+    if job.type == "benchmarks_query":
+        return _run_benchmarks_query(job)
     # Unknown type — record it as a failed RunPush so the server sees it
     log = _LogCollector()
     return _failed_push(
@@ -2901,3 +2909,202 @@ def _run_eod(job: PollJob) -> TaskPush:
         level="warning")
     return _task_push(job, "eod_run", "failed", log,
                        result={"stage": "not_implemented"})
+
+
+# ── config_get / config_set ───────────────────────────────────────── #
+#
+# Allows the control plane to read and write the agent's JSON config
+# files (sources.json, broker_map.json, pools_hub.json, etc.) via the
+# poll → execute → push round-trip. Writes back up the previous file
+# to data/config_backups/{name}.bak-{ts} so an operator mistake is
+# always recoverable.
+
+# Whitelist of editable JSON configs. Anything outside this set is
+# rejected — protects against path traversal and unintended writes.
+_EDITABLE_CONFIGS = frozenset({
+    "sources.json",
+    "broker_map.json",
+    "custodian_dispatch.json",
+    "mappings.json",
+    "pool_map.json",
+    "pools_hub.json",
+    "scheme_noise_tokens.json",
+    "recon_settings.json",
+    "ws_state_codes.json",
+    "gst_config.json",
+    "fee_entity_payments.json",
+    "benchmarks.json",
+    "icici_bank_pool_map.json",
+    "hdfc_bank_pool_map.json",
+    "kotak_bank_pool_map.json",
+})
+
+
+def _config_path(name: str) -> Path:
+    """Return the on-disk path for a whitelisted config name. The agent
+    keeps configs under {workdir-or-bundle}/config/{name}.json."""
+    from .paths import config_dir
+    return config_dir() / name
+
+
+def _run_config_get(job: PollJob) -> TaskPush:
+    """Return the contents + filesystem metadata of one config file.
+
+    Payload: {name: "sources.json"}
+    Result:  {name, exists, content (parsed json), size, modified}
+    """
+    log = _LogCollector()
+    payload = job.payload or {}
+    name = str(payload.get("name") or "").strip()
+    if not name or name not in _EDITABLE_CONFIGS:
+        return _task_failed(
+            job, "config_get", log,
+            ValueError(f"config name not in whitelist: {name!r}"),
+        )
+    try:
+        path = _config_path(name)
+        if not path.exists():
+            return _task_push(job, "config_get", "ok", log, result={
+                "name": name, "exists": False, "content": None,
+                "size": 0, "modified": None,
+            })
+        import json as _json
+        stat = path.stat()
+        with open(path, encoding="utf-8") as f:
+            content = _json.load(f)
+        log(f"Read {name} ({stat.st_size} bytes)")
+        return _task_push(job, "config_get", "ok", log, result={
+            "name": name,
+            "exists": True,
+            "content": content,
+            "size": stat.st_size,
+            "modified": datetime.fromtimestamp(
+                stat.st_mtime, tz=timezone.utc,
+            ).isoformat(),
+        })
+    except Exception as e:  # noqa: BLE001
+        return _task_failed(job, "config_get", log, e)
+
+
+def _run_config_set(job: PollJob) -> TaskPush:
+    """Write a config file, backing up the previous version first.
+
+    Payload: {name: "sources.json", content: <json>}
+    Result:  {name, written: bool, backup_path, size}
+    """
+    log = _LogCollector()
+    payload = job.payload or {}
+    name = str(payload.get("name") or "").strip()
+    content = payload.get("content")
+    if not name or name not in _EDITABLE_CONFIGS:
+        return _task_failed(
+            job, "config_set", log,
+            ValueError(f"config name not in whitelist: {name!r}"),
+        )
+    if content is None:
+        return _task_failed(
+            job, "config_set", log,
+            ValueError("payload.content is required"),
+        )
+    try:
+        import json as _json
+        path = _config_path(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Atomic backup if a prior version exists
+        backup_path = None
+        if path.exists():
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            bkp_dir = path.parent.parent / "config_backups"
+            bkp_dir.mkdir(parents=True, exist_ok=True)
+            backup_path = bkp_dir / f"{name}.bak-{ts}"
+            backup_path.write_bytes(path.read_bytes())
+            log(f"Backed up previous version to {backup_path.name}")
+
+        # Atomic write
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(content, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.replace(tmp, path)
+        log(f"Wrote {name} ({path.stat().st_size} bytes)")
+
+        return _task_push(job, "config_set", "ok", log, result={
+            "name": name,
+            "written": True,
+            "size": path.stat().st_size,
+            "backup": str(backup_path) if backup_path else None,
+        })
+    except Exception as e:  # noqa: BLE001
+        return _task_failed(job, "config_set", log, e)
+
+
+# ── bank_history_query ────────────────────────────────────────────── #
+
+
+def _run_bank_history_query(job: PollJob) -> TaskPush:
+    """Return entries from data/bank_balance_history.json, optionally
+    filtered by date range. Reads the cumulative-log JSON directly
+    rather than going through bank_balance_history.load (which is
+    designed for the recon-engine's specific prior-day lookup).
+
+    Payload: {from_date: 'YYYY-MM-DD' | null, to_date: 'YYYY-MM-DD' | null}
+    Result:  {entries: {...}, total: int}  (entries keyed by date)
+    """
+    log = _LogCollector()
+    payload = job.payload or {}
+    try:
+        settings = load_settings()
+        data_dir = Path(settings.workdir) / "data"
+        path = data_dir / "bank_balance_history.json"
+        if not path.exists():
+            return _task_push(job, "bank_history_query", "ok", log, result={
+                "exists": False, "entries": {}, "total": 0,
+            })
+        import json as _json
+        with open(path, encoding="utf-8") as f:
+            data = _json.load(f)
+        d_from = (payload.get("from_date") or "").strip()
+        d_to   = (payload.get("to_date") or "").strip()
+        entries = data if isinstance(data, dict) else {}
+        if d_from or d_to:
+            entries = {
+                k: v for k, v in entries.items()
+                if (not d_from or k >= d_from)
+                and (not d_to   or k <= d_to)
+            }
+        log(f"Returning {len(entries)} bank-history date(s)")
+        return _task_push(job, "bank_history_query", "ok", log, result={
+            "exists":  True,
+            "entries": entries,
+            "total":   len(entries),
+        })
+    except Exception as e:  # noqa: BLE001
+        return _task_failed(job, "bank_history_query", log, e)
+
+
+# ── benchmarks_query ──────────────────────────────────────────────── #
+
+
+def _run_benchmarks_query(job: PollJob) -> TaskPush:
+    """Return the contents of config/benchmarks.json."""
+    log = _LogCollector()
+    try:
+        from .paths import config_dir
+        import json as _json
+        path = config_dir() / "benchmarks.json"
+        if not path.exists():
+            return _task_push(job, "benchmarks_query", "ok", log, result={
+                "exists": False, "entries": [], "total": 0,
+            })
+        with open(path, encoding="utf-8") as f:
+            data = _json.load(f)
+        entries = data if isinstance(data, list) else data.get("benchmarks", [])
+        log(f"Returning {len(entries)} benchmark entries")
+        return _task_push(job, "benchmarks_query", "ok", log, result={
+            "exists":  True,
+            "entries": entries,
+            "total":   len(entries),
+        })
+    except Exception as e:  # noqa: BLE001
+        return _task_failed(job, "benchmarks_query", log, e)

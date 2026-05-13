@@ -58,7 +58,7 @@ JobType = Literal[
     "fetch_emails",
     "ws_download",
     "diagnostic_bundle",
-    # New task-style jobs — produce TaskPush results
+    # Task-style jobs — produce TaskPush results
     "client_onboard",       # CML → registry → WS account creation → GST → welcome email
     "pool_create",          # Headless 3-step + broker invitations
     "welcome_email",        # Resend welcome email for existing client(s)
@@ -67,6 +67,11 @@ JobType = Literal[
     "fees_email",           # Email fee statement PDFs to entities
     "bod_run",              # Beginning-of-day pipeline (price upload + NAV + flags)
     "eod_run",              # End-of-day pipeline (file checks + recon summary email)
+    # Phase 5 — agent config + read-only data round-trip
+    "config_get",           # Read an agent-side JSON config file
+    "config_set",           # Write an agent-side JSON config file
+    "bank_history_query",   # Read bank_balance_history.json
+    "benchmarks_query",     # Read config/benchmarks.json
 ]
 
 
@@ -180,7 +185,11 @@ TaskType = Literal[
     "fees_email",
     "bod_run",
     "eod_run",
-]
+    "config_get",
+    "config_set",
+    "bank_history_query",
+    "benchmarks_query",
+]  # type: ignore[assignment]
 TaskStatus = Literal["ok", "partial", "failed"]
 
 
